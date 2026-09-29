@@ -1,0 +1,13 @@
+FROM python:3.10
+
+WORKDIR /app
+
+# Primero instalamos las dependencias
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Luego copiamos el resto del código
+COPY . .
+
+# Hugging Face expone los servidores por defecto en el puerto 7860
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]

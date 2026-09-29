@@ -17,12 +17,14 @@ from pypfopt.risk_models import CovarianceShrinkage
 from pypfopt.efficient_frontier import EfficientFrontier
 from pypfopt.black_litterman import BlackLittermanModel
 
-from transformers import pipeline
 from apscheduler.schedulers.background import BackgroundScheduler
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
 DB_NAME = "quant_database.db"
+
+# --- MICROSERVICIO DE IA ---
+HF_API_TOKEN = "hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" # <-- ¡Pega tu token aquí!
 
 TICKER_MAP = {
     "BRKB": "BRK-B",
@@ -46,7 +48,36 @@ def init_db():
     conn.commit()
     conn.close()
 
-sentiment_pipeline = pipeline("sentiment-analysis", model="ProsusAI/finbert")
+def get_sentiment_from_api(titles):
+    if not titles: return 0
+    API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
+    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+    
+    for attempt in range(3):
+        try:
+            response = requests.post(API_URL, headers=headers, json={"inputs": titles})
+            results = response.json()
+            
+            # Si el modelo de HF estaba dormido, nos pedirá esperar unos segundos
+            if isinstance(results, dict) and 'error' in results:
+                wait_time = results.get('estimated_time', 15)
+                print(f"  -> Despertando IA en la nube. Esperando {round(wait_time)} seg...")
+                time.sleep(wait_time + 2)
+                continue
+                
+            score_total = 0
+            if isinstance(results, list):
+                for item in results:
+                    if isinstance(item, list) and len(item) > 0:
+                        label = item[0]['label']
+                        if label == 'positive': score_total += 1
+                        elif label == 'negative': score_total -= 1
+            return score_total / len(titles)
+            
+        except Exception as e:
+            print(f"  -> Error conectando a la IA externa: {e}")
+            return 0
+    return 0
 
 def get_universe_from_file():
     if not os.path.exists("cedears.txt"):
@@ -58,7 +89,7 @@ def daily_sentiment_job():
     tickers = get_universe_from_file()
     total = len(tickers)
     today = datetime.now().strftime("%Y-%m-%d")
-    print(f"\n[{datetime.now()}] Iniciando Motor NLP XML para {total} activos...")
+    print(f"\n[{datetime.now()}] Iniciando Motor NLP Externo para {total} activos...")
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -77,9 +108,9 @@ def daily_sentiment_job():
             if not titles:
                 print("Sin noticias hoy.")
                 continue
-            ia_results = sentiment_pipeline(titles)
-            score_total = sum([1 if res['label'] == 'positive' else -1 if res['label'] == 'negative' else 0 for res in ia_results])
-            avg_score = score_total / len(titles)
+            
+            # Llamamos a nuestro nuevo microservicio externo
+            avg_score = get_sentiment_from_api(titles)
 
             cursor.execute('''
                 INSERT OR REPLACE INTO sentiment_history (date, ticker, sentiment_score, articles_analyzed)
@@ -101,9 +132,8 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
-app = FastAPI(title="Quant Portfolio API", version="2.1.1", lifespan=lifespan)
+app = FastAPI(title="Quant Portfolio API", version="3.0.0 (Cloud Edition)", lifespan=lifespan)
 
-# --- CLAVE PARA LA NUBE: Permite conexiones desde Vercel ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -129,9 +159,7 @@ def optimize_portfolio(request: RebalanceRequest):
             mapped_portfolio[clean_ticker] = v
             
     user_tickers = list(mapped_portfolio.keys())
-    
-    if len(user_tickers) < 2:
-        raise HTTPException(status_code=400, detail="Mínimo 2 activos requeridos.")
+    if len(user_tickers) < 2: raise HTTPException(status_code=400, detail="Mínimo 2 activos requeridos.")
 
     try:
         tickers_tuple = tuple(sorted(user_tickers + ["SPY"]))
@@ -142,13 +170,9 @@ def optimize_portfolio(request: RebalanceRequest):
         df_all.dropna(inplace=True) 
 
         valid_tickers = [t for t in user_tickers if t in df_all.columns]
-        if len(valid_tickers) < 2:
-            raise HTTPException(status_code=400, detail="No se encontraron datos históricos suficientes para procesar al menos 2 activos.")
+        if len(valid_tickers) < 2: raise HTTPException(status_code=400, detail="No hay datos históricos suficientes.")
 
         total_current_weight = sum([mapped_portfolio[t] for t in valid_tickers])
-        if total_current_weight <= 0:
-            raise HTTPException(status_code=400, detail="El peso total de la cartera es 0.")
-            
         normalized_current = {t: mapped_portfolio[t] / total_current_weight for t in valid_tickers}
 
         spy_returns = df_all['SPY'].pct_change().dropna()

@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+yfinance
+pandas
+numpy
+PyPortfolioOpt
+requests
+beautifulsoup4
+lxml
+apscheduler
