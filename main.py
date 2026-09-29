@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 DB_NAME = "quant_database.db"
 
 # --- MICROSERVICIO DE IA ---
-HF_API_TOKEN = "hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" # <-- ¡Pega tu token aquí!
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 
 TICKER_MAP = {
     "BRKB": "BRK-B",
