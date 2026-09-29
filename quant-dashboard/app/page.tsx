@@ -14,7 +14,6 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Parseo estándar con punto
   const parseWeight = (val: string) => {
     const parsed = parseFloat(val);
     return isNaN(parsed) ? 0 : parsed;
@@ -204,7 +203,8 @@ export default function Home() {
                       <YAxis stroke="#9CA3AF" tickFormatter={(val) => `$${val / 1000}k`} tick={{fontSize: 12}} />
                       <Tooltip 
                         contentStyle={{ backgroundColor: '#111827', borderColor: '#374151', color: '#fff' }}
-                        formatter={(value: number) => [`$${value.toLocaleString()}`, undefined]}
+                        // AQUI ESTA LA CORRECCIÓN CLAVE: value: any
+                        formatter={(value: any) => [`$${value.toLocaleString()}`, undefined]}
                       />
                       <Area type="monotone" dataKey="Tu Cartera" stroke="#6B7280" fill="transparent" strokeWidth={2} />
                       <Area type="monotone" dataKey="Markowitz + IA" stroke="#10B981" fill="url(#colorOpt)" strokeWidth={3} />
