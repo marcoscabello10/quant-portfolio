@@ -5,9 +5,7 @@ yfinance
 pandas
 numpy
 PyPortfolioOpt
-transformers
-torch
-apscheduler
 requests
 beautifulsoup4
 lxml
+apscheduler
