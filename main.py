@@ -84,7 +84,7 @@ def get_sentiment_from_api(titles):
 
 def get_universe_from_file():
     if not os.path.exists("cedears.txt"):
-        return ["AAPL", "MSFT", "NVDA"]
+        return ["AAPL", "MSFT", "NVDA", "KO", "JNJ", "V", "BRK-B"]
     with open("cedears.txt", "r") as file:
         return [line.strip().upper() for line in file if line.strip()]
 
@@ -134,7 +134,7 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
-app = FastAPI(title="Quant Portfolio API", version="3.1.0", lifespan=lifespan)
+app = FastAPI(title="Quant Portfolio API", version="3.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -248,6 +248,7 @@ def optimize_portfolio(request: RebalanceRequest):
 @app.get("/api/v1/screener")
 def market_screener():
     tickers = get_universe_from_file()
+    # Fallback si el archivo está vacío
     if not tickers:
         tickers = ["AAPL", "MSFT", "NVDA", "KO", "JNJ", "V", "BRK-B"]
         
@@ -255,31 +256,56 @@ def market_screener():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Escaneamos los primeros 12 para que cargue rápido en Render
-    for t in tickers[:12]:
+    # 1. EL DISFRAZ: Engañamos a Yahoo Finance haciéndonos pasar por Google Chrome
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    })
+    
+    valid_count = 0
+    
+    # 2. Escaneamos la lista y nos detenemos al encontrar 9 oportunidades válidas
+    for t in tickers:
+        if valid_count >= 9:
+            break
+            
         try:
-            stock = yf.Ticker(t)
+            # Le pasamos la sesión "disfrazada" a yfinance
+            stock = yf.Ticker(t, session=session)
             info = stock.info
+            
+            # Si Yahoo igual nos bloquea o la empresa está deslistada, la saltamos.
+            if not info or "sector" not in info:
+                continue
+                
             roe = info.get("returnOnEquity", 0)
             pe = info.get("trailingPE", 0)
             sector = info.get("sector", "Desconocido")
+            
+            # 3. FILTRO DE BASURA: Ignoramos empresas con ROE 0 o sin datos completos
+            if roe is None or roe == 0 or pe is None or pe == 0 or sector == "Desconocido":
+                continue
             
             cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (t,))
             row = cursor.fetchone()
             ai_score = row[0] if row[0] is not None else 0
             
-            if roe is not None and pe is not None:
-                results.append({
-                    "ticker": t,
-                    "sector": sector,
-                    "roe_pct": round(roe * 100, 2),
-                    "pe_ratio": round(pe, 2),
-                    "ai_score": round(ai_score, 2),
-                    "recommendation": "COMPRA FUERTE" if ai_score > 0.3 and roe > 0.15 else "COMPRAR" if roe > 0.15 else "MANTENER"
-                })
+            results.append({
+                "ticker": t,
+                "sector": sector,
+                "roe_pct": round(roe * 100, 2),
+                "pe_ratio": round(pe, 2),
+                "ai_score": round(ai_score, 2),
+                "recommendation": "COMPRA FUERTE" if ai_score > 0.3 and roe > 0.15 else "COMPRAR" if roe > 0.15 else "MANTENER"
+            })
+            
+            valid_count += 1
+            
         except Exception:
             continue
             
     conn.close()
+    
+    # Ordenamos a las mejores empresas por su ROE (Rentabilidad sobre recursos propios)
     results = sorted(results, key=lambda x: x['roe_pct'], reverse=True)
     return {"top_picks": results}
