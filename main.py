@@ -9,6 +9,7 @@ from datetime import datetime
 import time
 import os
 import requests
+import json
 from bs4 import BeautifulSoup
 import functools
 
@@ -22,8 +23,6 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
 DB_NAME = "quant_database.db"
-
-# --- MICROSERVICIO DE IA (Seguro vía Variables de Entorno) ---
 HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 
 TICKER_MAP = {
@@ -50,9 +49,7 @@ def init_db():
 
 def get_sentiment_from_api(titles):
     if not titles: return 0
-    if not HF_API_TOKEN:
-        print("Advertencia: No se encontró el HF_API_TOKEN en el entorno.")
-        return 0
+    if not HF_API_TOKEN: return 0
         
     API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
     headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
@@ -75,7 +72,6 @@ def get_sentiment_from_api(titles):
                         if label == 'positive': score_total += 1
                         elif label == 'negative': score_total -= 1
             return score_total / len(titles)
-            
         except Exception:
             return 0
     return 0
@@ -124,7 +120,7 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
-app = FastAPI(title="Quant Portfolio API", version="3.3.0", lifespan=lifespan)
+app = FastAPI(title="Quant Portfolio API", version="4.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -234,86 +230,44 @@ def optimize_portfolio(request: RebalanceRequest):
         }
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
-# ================= SCREENER CON SISTEMA ANTI-BAN =================
+# ================= SCREENER BASADO EN DATA LAKE LOCAL =================
 @app.get("/api/v1/screener")
 def market_screener():
-    tickers = get_universe_from_file()
-    if not tickers:
-        tickers = ["AAPL", "MSFT", "NVDA", "KO", "JNJ", "V", "BRK-B"]
+    # 1. Leemos el archivo local generado por tu actualizador
+    if not os.path.exists("market_data.json"):
+        return {"top_picks": [], "error": "Data Lake no encontrado. Ejecuta actualizador.py primero."}
+        
+    with open("market_data.json", "r") as f:
+        market_data = json.load(f)
         
     results = []
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-    })
-    
-    valid_count = 0
-    
-    # Intento 1: API Directa
-    for t in tickers:
-        if valid_count >= 9: break
-        try:
-            stock = yf.Ticker(t, session=session)
-            info = stock.info
-            
-            if not info or "sector" not in info: continue
-                
-            roe = info.get("returnOnEquity", 0)
-            pe = info.get("trailingPE", 0)
-            sector = info.get("sector", "Desconocido")
-            
-            if roe is None or roe == 0 or pe is None or pe == 0 or sector == "Desconocido":
-                continue
-            
-            cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (t,))
-            row = cursor.fetchone()
-            ai_score = row[0] if row[0] is not None else 0
-            
-            results.append({
-                "ticker": t,
-                "sector": sector,
-                "roe_pct": round(roe * 100, 2),
-                "pe_ratio": round(pe, 2),
-                "ai_score": round(ai_score, 2),
-                "recommendation": "COMPRA FUERTE" if ai_score > 0.2 and roe > 0.15 else "COMPRAR" if roe > 0.10 else "MANTENER"
-            })
-            valid_count += 1
-        except Exception:
-            continue
-
-    # ================= PLAN B DE EMERGENCIA =================
-    # Si Render está baneado y 'results' quedó vacío, activamos la base de contingencia.
-    # Los datos fundamentales se estiman, pero el Score IA se calcula REAL con Hugging Face.
-    if len(results) == 0:
-        fallback_data = [
-            ("NVDA", "Technology", 0.55, 65.5),
-            ("MSFT", "Technology", 0.38, 35.2),
-            ("AAPL", "Technology", 1.45, 28.5),
-            ("V", "Financial Services", 0.42, 30.1),
-            ("JNJ", "Healthcare", 0.25, 15.4),
-            ("KO", "Consumer Defensive", 0.40, 24.3),
-            ("AMZN", "Consumer Cyclical", 0.18, 41.2),
-            ("GOOGL", "Technology", 0.28, 25.4),
-            ("META", "Technology", 0.32, 27.8)
-        ]
+    # 2. Inyectamos el score de IA y evaluamos
+    for ticker, data in market_data.items():
+        cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (ticker,))
+        row = cursor.fetchone()
+        ai_score = row[0] if row[0] is not None else 0
         
-        for t, sec, r, p in fallback_data:
-            cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (t,))
-            row = cursor.fetchone()
-            ai_score = row[0] if row[0] is not None else 0
+        # Lógica de recomendación institucional basada en múltiples factores
+        roe = data.get("roe") or 0
+        revenue_growth = data.get("revenue_growth_yoy") or 0
+        
+        if ai_score > 0.15 and (roe > 0.15 or revenue_growth > 0.15):
+            rec = "COMPRA FUERTE"
+        elif roe > 0.10 or revenue_growth > 0.10 or ai_score > 0.1:
+            rec = "COMPRAR"
+        else:
+            rec = "MANTENER"
             
-            results.append({
-                "ticker": t,
-                "sector": sec,
-                "roe_pct": round(r * 100, 2),
-                "pe_ratio": round(p, 2),
-                "ai_score": round(ai_score, 2),
-                "recommendation": "COMPRA FUERTE" if ai_score > 0.1 and r > 0.15 else "COMPRAR" if r > 0.15 else "MANTENER"
-            })
+        data["ticker"] = ticker
+        data["ai_score"] = round(ai_score, 2)
+        data["recommendation"] = rec
+        results.append(data)
 
     conn.close()
-    results = sorted(results, key=lambda x: x['roe_pct'], reverse=True)
-    return {"top_picks": results}
+    
+    # 3. Ordenamos las mejores empresas combinando IA, Rentabilidad y Crecimiento
+    results = sorted(results, key=lambda x: (x.get('ai_score', 0) + (x.get('roe') or 0)), reverse=True)
+    return {"top_picks": results[:15]}
