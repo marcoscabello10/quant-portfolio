@@ -120,7 +120,7 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
-app = FastAPI(title="Quant Portfolio API", version="4.0.0", lifespan=lifespan)
+app = FastAPI(title="Quant Portfolio API", version="5.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -137,6 +137,7 @@ class RebalanceRequest(BaseModel):
 def fetch_historical_data(tickers_tuple: tuple, period: str = "5y"):
     return yf.download(list(tickers_tuple), period=period)['Close']
 
+# ================= 1. OPTIMIZADOR DE CARTERA =================
 @app.post("/api/v1/portfolio/optimize")
 def optimize_portfolio(request: RebalanceRequest):
     mapped_portfolio = {}
@@ -230,10 +231,9 @@ def optimize_portfolio(request: RebalanceRequest):
         }
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
-# ================= SCREENER BASADO EN DATA LAKE LOCAL =================
+# ================= 2. SCREENER INSTITUCIONAL =================
 @app.get("/api/v1/screener")
 def market_screener():
-    # 1. Leemos el archivo local generado por tu actualizador
     if not os.path.exists("market_data.json"):
         return {"top_picks": [], "error": "Data Lake no encontrado. Ejecuta actualizador.py primero."}
         
@@ -244,13 +244,11 @@ def market_screener():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # 2. Inyectamos el score de IA y evaluamos
     for ticker, data in market_data.items():
         cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (ticker,))
         row = cursor.fetchone()
         ai_score = row[0] if row[0] is not None else 0
         
-        # Lógica de recomendación institucional basada en múltiples factores
         roe = data.get("roe") or 0
         revenue_growth = data.get("revenue_growth_yoy") or 0
         
@@ -268,6 +266,78 @@ def market_screener():
 
     conn.close()
     
-    # 3. Ordenamos las mejores empresas combinando IA, Rentabilidad y Crecimiento
+    # Ordenamos combinando IA, Rentabilidad y Crecimiento
     results = sorted(results, key=lambda x: (x.get('ai_score', 0) + (x.get('roe') or 0)), reverse=True)
-    return {"top_picks": results[:15]}
+    # Mostramos el Top 24 en lugar del Top 15
+    return {"top_picks": results[:24]}
+
+# ================= 3. CARTERA MODELO (NUEVO DINERO) =================
+@app.get("/api/v1/model_portfolio")
+def get_model_portfolio():
+    try:
+        if not os.path.exists("market_data.json"):
+            raise HTTPException(status_code=404, detail="Data Lake no encontrado.")
+            
+        with open("market_data.json", "r") as f:
+            market_data = json.load(f)
+            
+        # Seleccionamos las 10 mejores acciones cruzando IA + ROE
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        valid_stocks = []
+        for t, data in market_data.items():
+            cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (t,))
+            row = cursor.fetchone()
+            score = row[0] if row[0] is not None else 0
+            roe = data.get("roe") or 0
+            if roe > 0.05: # Filtro mínimo de calidad
+                valid_stocks.append((t, score + roe))
+        conn.close()
+        
+        valid_stocks.sort(key=lambda x: x[1], reverse=True)
+        top_tickers = [x[0] for x in valid_stocks[:10]]
+        
+        # Pool de empresas de élite por si el Data Lake es muy pequeño
+        if len(top_tickers) < 5:
+            top_tickers = ["AAPL", "MSFT", "NVDA", "V", "JNJ", "WMT", "JPM", "PG"]
+            
+        tickers_tuple = tuple(sorted(top_tickers + ["SPY"]))
+        df_all = fetch_historical_data(tickers_tuple, period="5y")
+        
+        df_all.dropna(axis=1, how='all', inplace=True)
+        df_all.ffill(inplace=True)
+        df_all.dropna(inplace=True)
+        
+        valid_t = [t for t in top_tickers if t in df_all.columns]
+        df_universe = df_all[valid_t]
+        
+        mu = mean_historical_return(df_universe)
+        S = CovarianceShrinkage(df_universe).ledoit_wolf()
+        
+        # Optimizamos limitando cada activo al 25% para forzar diversificación real
+        ef = EfficientFrontier(mu, S, weight_bounds=(0.05, 0.25))
+        ef.max_sharpe()
+        ret, vol, sharpe = ef.portfolio_performance()
+        weights = ef.clean_weights(cutoff=0.01)
+        
+        # Benchmark contra el mercado (SPY)
+        spy_returns = df_all['SPY'].pct_change().dropna()
+        spy_ret = spy_returns.mean() * 252
+        spy_vol = spy_returns.std() * np.sqrt(252)
+        spy_sharpe = (spy_ret - 0.02) / spy_vol if spy_vol > 0 else 0
+        
+        return {
+            "assets": [{"ticker": k, "weight": round(v * 100, 2)} for k, v in weights.items() if v > 0],
+            "metrics": {
+                "return_pct": round(ret * 100, 2),
+                "volatility_pct": round(vol * 100, 2),
+                "sharpe": round(sharpe, 2)
+            },
+            "benchmark": {
+                "return_pct": round(spy_ret * 100, 2),
+                "volatility_pct": round(spy_vol * 100, 2),
+                "sharpe": round(spy_sharpe, 2)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

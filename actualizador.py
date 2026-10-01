@@ -23,12 +23,10 @@ def build_data_lake():
             stock = yf.Ticker(t)
             info = stock.info
             
-            # Si no hay sector, la empresa está deslistada o el ticker es inválido
             if "sector" not in info:
                 print(" ❌ Sin datos.")
                 continue
                 
-            # Extraemos la matriz de datos completa
             market_data[t] = {
                 "sector": info.get("sector", "Desconocido"),
                 "industry": info.get("industry", "Desconocida"),
@@ -40,37 +38,34 @@ def build_data_lake():
                 "price_to_book": info.get("priceToBook"),
                 "ev_ebitda": info.get("enterpriseToEbitda"),
                 
-                # Rentabilidad
+                # Rentabilidad y Eficiencia
                 "roe": info.get("returnOnEquity"),
                 "roa": info.get("returnOnAssets"),
                 "operating_margin": info.get("operatingMargins"),
+                "gross_margin": info.get("grossMargins"),
                 "dividend_yield": info.get("dividendYield"),
+                "payout_ratio": info.get("payoutRatio"),
                 
-                # Crecimiento (Growth)
+                # Crecimiento y Caja (Growth / Cash)
                 "revenue_growth_yoy": info.get("revenueGrowth"),
-                "earnings_growth_yoy": info.get("earningsGrowth"),
+                "free_cash_flow": info.get("freeCashflow"),
+                "operating_cash_flow": info.get("operatingCashflow"),
                 
-                # Riesgo / Salud Financiera
+                # Riesgo
                 "debt_to_equity": info.get("debtToEquity"),
-                "current_ratio": info.get("currentRatio"),
                 "beta": info.get("beta"),
                 
                 "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             print(" ✅ OK.")
-            
-            # Pausa de 1.5 segundos para no saturar a Yahoo Finance
             time.sleep(1.5)
-            
-        except Exception as e:
+        except Exception:
             print(f" ❌ Error.")
             continue
 
-    # Guardamos el archivo maestro
     with open("market_data.json", "w") as f:
         json.dump(market_data, f, indent=4)
-        
-    print(f"\n¡Data Lake actualizado! Archivo 'market_data.json' generado exitosamente.")
+    print(f"\n¡Data Lake actualizado!")
 
 if __name__ == "__main__":
     build_data_lake()
