@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'optimizer' | 'screener'>('optimizer');
+  const [activeTab, setActiveTab] = useState<'optimizer' | 'screener'>('screener'); // Iniciamos en Screener para probar
 
   const [portfolio, setPortfolio] = useState([
     { ticker: 'AAPL', weight: '30' },
@@ -84,6 +84,15 @@ export default function Home() {
     }
   }, [activeTab]);
 
+  // Ordenamiento Inteligente: Primero por Sector (alfabético), luego por AI Score (descendente)
+  const groupedScreenerData = [...screenerData].sort((a, b) => {
+    const sectorA = a.sector || "";
+    const sectorB = b.sector || "";
+    if (sectorA < sectorB) return -1;
+    if (sectorA > sectorB) return 1;
+    return (b.ai_score || 0) - (a.ai_score || 0);
+  });
+
   const generateProjectionData = () => {
     if (!optResults || !optResults.current_performance_metrics) return [];
     const data = [];
@@ -105,9 +114,14 @@ export default function Home() {
   };
   const projectionData = generateProjectionData();
 
-  // FORMATO DE MÉTRICAS DINÁMICO POR SECTOR
-  const formatPct = (val: any) => val ? `${(val * 100).toFixed(1)}%` : 'N/A';
-  const formatNum = (val: any) => val ? val.toFixed(2) : 'N/A';
+  // FORMATO DE MÉTRICAS DINÁMICO POR SECTOR (Con corrección de porcentajes de Yahoo)
+  const formatPct = (val: any) => {
+    if (val == null) return 'N/A';
+    const num = parseFloat(val);
+    // Si Yahoo ya lo envió multiplicado (ej. 2.45 en vez de 0.0245), evitamos multiplicarlo de nuevo.
+    return (num > 1 || num < -1) ? `${num.toFixed(1)}%` : `${(num * 100).toFixed(1)}%`;
+  };
+  const formatNum = (val: any) => val != null ? parseFloat(val).toFixed(2) : 'N/A';
 
   const renderDynamicMetrics = (asset: any) => {
     const sector = asset.sector || "";
@@ -117,8 +131,10 @@ export default function Home() {
       return (
         <div className="space-y-2">
           <MetricRow label="Forward P/E" value={formatNum(asset.forward_pe)} highlight={asset.forward_pe && asset.forward_pe < 25} />
-          <MetricRow label="Crec. Ingresos (YoY)" value={formatPct(asset.revenue_growth_yoy)} highlight={asset.revenue_growth_yoy > 0.15} />
           <MetricRow label="PEG Ratio" value={formatNum(asset.peg_ratio)} highlight={asset.peg_ratio && asset.peg_ratio < 1.5} />
+          <MetricRow label="Crec. Ingresos (YoY)" value={formatPct(asset.revenue_growth_yoy)} highlight={asset.revenue_growth_yoy > 0.15} />
+          <MetricRow label="ROE (Retorno Cap.)" value={formatPct(asset.roe)} highlight={asset.roe > 0.20} />
+          <MetricRow label="Riesgo Beta" value={formatNum(asset.beta)} highlight={asset.beta && asset.beta < 1.1} />
         </div>
       );
     } 
@@ -127,7 +143,9 @@ export default function Home() {
       return (
         <div className="space-y-2">
           <MetricRow label="Price to Book (P/B)" value={formatNum(asset.price_to_book)} highlight={asset.price_to_book && asset.price_to_book < 1.5} />
+          <MetricRow label="Trailing P/E" value={formatNum(asset.pe_ratio)} highlight={asset.pe_ratio && asset.pe_ratio < 15} />
           <MetricRow label="ROA (Retorno Activos)" value={formatPct(asset.roa)} highlight={asset.roa > 0.015} />
+          <MetricRow label="ROE (Retorno Cap.)" value={formatPct(asset.roe)} highlight={asset.roe > 0.10} />
           <MetricRow label="Dividend Yield" value={formatPct(asset.dividend_yield)} highlight={asset.dividend_yield > 0.03} />
         </div>
       );
@@ -137,8 +155,10 @@ export default function Home() {
       return (
         <div className="space-y-2">
           <MetricRow label="EV / EBITDA" value={formatNum(asset.ev_ebitda)} highlight={asset.ev_ebitda && asset.ev_ebitda < 10} />
-          <MetricRow label="Margen Operativo" value={formatPct(asset.operating_margin)} highlight={asset.operating_margin > 0.15} />
           <MetricRow label="Price to Book (P/B)" value={formatNum(asset.price_to_book)} highlight={asset.price_to_book && asset.price_to_book < 2} />
+          <MetricRow label="Margen Operativo" value={formatPct(asset.operating_margin)} highlight={asset.operating_margin > 0.15} />
+          <MetricRow label="Dividend Yield" value={formatPct(asset.dividend_yield)} highlight={asset.dividend_yield > 0.03} />
+          <MetricRow label="Riesgo Beta" value={formatNum(asset.beta)} highlight={asset.beta && asset.beta < 1} />
         </div>
       );
     }
@@ -147,8 +167,10 @@ export default function Home() {
       return (
         <div className="space-y-2">
           <MetricRow label="Trailing P/E" value={formatNum(asset.pe_ratio)} highlight={asset.pe_ratio && asset.pe_ratio < 20} />
-          <MetricRow label="Deuda / Capital" value={formatNum(asset.debt_to_equity)} highlight={asset.debt_to_equity && asset.debt_to_equity < 50} />
+          <MetricRow label="Deuda / Capital" value={formatNum(asset.debt_to_equity)} highlight={asset.debt_to_equity && asset.debt_to_equity < 60} />
           <MetricRow label="Dividend Yield" value={formatPct(asset.dividend_yield)} highlight={asset.dividend_yield > 0.02} />
+          <MetricRow label="ROE (Retorno Cap.)" value={formatPct(asset.roe)} highlight={asset.roe > 0.15} />
+          <MetricRow label="Riesgo Beta" value={formatNum(asset.beta)} highlight={asset.beta && asset.beta < 0.9} />
         </div>
       );
     }
@@ -187,7 +209,7 @@ export default function Home() {
 
         {activeTab === 'optimizer' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in">
-            {/* ... COMPONENTE OPTIMIZADOR INTACTO ... */}
+            {/* ... COMPONENTE OPTIMIZADOR ... */}
             <div className="lg:col-span-1 bg-gray-900 p-6 rounded-b-xl rounded-tr-xl border border-gray-800 shadow-lg h-fit">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-bold text-gray-200">Cartera Cliente</h2>
@@ -316,7 +338,7 @@ export default function Home() {
               <div className="text-center py-10 text-red-400">{screenError}</div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {screenerData.map((asset, index) => (
+                {groupedScreenerData.map((asset, index) => (
                   <div key={index} className="bg-gray-950 border border-gray-800 rounded-xl p-5 hover:border-gray-600 transition-colors shadow-lg relative overflow-hidden flex flex-col justify-between">
                     
                     <div className={`absolute top-0 right-0 text-xs px-3 py-1 font-bold rounded-bl-lg
