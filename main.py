@@ -127,7 +127,7 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
-app = FastAPI(title="Quant Portfolio API", version="7.0.0", lifespan=lifespan)
+app = FastAPI(title="Quant Portfolio API", version="8.5.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -221,6 +221,59 @@ def optimize_portfolio(request: RebalanceRequest):
                     "target_pct": round(target_w * 100, 2)
                 })
 
+        # ================= INYECCIÓN FUNDAMENTAL EXPANDIDA (6 MÉTRICAS) =================
+        fundamental_metrics = None
+        if os.path.exists("market_data.json"):
+            with open("market_data.json", "r") as f:
+                market_data = json.load(f)
+                
+            def calc_weighted_metrics(weights_dict):
+                pe, yield_pct, roe = 0.0, 0.0, 0.0
+                beta, peg, rev_growth = 0.0, 0.0, 0.0
+                valid_pe_weight, valid_peg_weight = 0.0, 0.0
+                
+                for t, w in weights_dict.items():
+                    data = market_data.get(t, {})
+                    
+                    t_pe = safe_float(data.get("forward_pe") or data.get("pe_ratio"))
+                    t_yield = safe_float(data.get("dividend_yield"))
+                    t_roe = safe_float(data.get("roe"))
+                    t_beta = safe_float(data.get("beta"), 1.0) # Si no hay, asumimos 1.0
+                    t_peg = safe_float(data.get("peg_ratio"))
+                    t_rev = safe_float(data.get("revenue_growth_yoy"))
+                    
+                    if t_pe > 0:
+                        pe += t_pe * w
+                        valid_pe_weight += w
+                    if t_peg > 0:
+                        peg += t_peg * w
+                        valid_peg_weight += w
+                        
+                    yield_pct += t_yield * w
+                    roe += t_roe * w
+                    beta += t_beta * w
+                    rev_growth += t_rev * w
+                    
+                final_pe = (pe / valid_pe_weight) if valid_pe_weight > 0 else 0
+                final_peg = (peg / valid_peg_weight) if valid_peg_weight > 0 else 0
+                
+                return (
+                    round(final_pe, 2), round(yield_pct * 100, 2), round(roe * 100, 2),
+                    round(beta, 2), round(final_peg, 2), round(rev_growth * 100, 2)
+                )
+
+            curr_pe, curr_yield, curr_roe, curr_beta, curr_peg, curr_rev = calc_weighted_metrics(normalized_current)
+            opt_pe, opt_yield, opt_roe, opt_beta, opt_peg, opt_rev = calc_weighted_metrics(target_weights)
+            
+            fundamental_metrics = {
+                "current_pe": curr_pe, "optimal_pe": opt_pe,
+                "current_yield": curr_yield, "optimal_yield": opt_yield,
+                "current_roe": curr_roe, "optimal_roe": opt_roe,
+                "current_beta": curr_beta, "optimal_beta": opt_beta,
+                "current_peg": curr_peg, "optimal_peg": opt_peg,
+                "current_rev": curr_rev, "optimal_rev": opt_rev
+            }
+
         return {
             "current_weights": {k: round(v * 100, 2) for k, v in normalized_current.items()},
             "optimal_weights": {k: round(v * 100, 2) for k, v in target_weights.items()},
@@ -234,7 +287,8 @@ def optimize_portfolio(request: RebalanceRequest):
                 "expected_annual_return_pct": round(expected_return * 100, 2),
                 "annual_volatility_pct": round(volatility * 100, 2),
                 "sharpe_ratio": round(sharpe_ratio, 2)
-            }
+            },
+            "fundamental_metrics": fundamental_metrics
         }
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
@@ -327,7 +381,6 @@ def get_model_portfolio():
             
             composite_score = (quality_score * 0.25) + (growth_score * 0.25) + (value_score * 0.25) + (ai_score * 0.25)
             
-            # Constructor del Reporte Rationale
             reasons = []
             if quality_score > 0.3: reasons.append(f"Alta Calidad (ROE {capped_roe*100:.1f}%)")
             if peg_ratio > 0 and peg_ratio < 1.5: reasons.append(f"Atractiva (PEG {peg_ratio:.1f})")
@@ -390,7 +443,6 @@ def get_model_portfolio():
         spy_vol = spy_returns.std() * np.sqrt(252)
         spy_sharpe = (spy_ret - 0.02) / spy_vol if spy_vol > 0 else 0
         
-        # Respuesta JSON ahora empaqueta el Rationale y el Nombre de Empresa
         return {
             "assets": [
                 {

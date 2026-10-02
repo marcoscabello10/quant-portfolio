@@ -1,4 +1,4 @@
-"use client";
+"""use client""";
 
 import { useState, useEffect, useRef } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
@@ -140,14 +140,13 @@ export default function Home() {
     return data;
   };
 
-  // BACKTEST A 3 AÑOS (CORREGIDO - FORWARD BACKTEST)
+  // BACKTEST A 3 AÑOS (FORWARD BACKTEST)
   const generateBacktestData = () => {
     if (!modelPortfolio || !modelPortfolio.metrics) return [];
     const data = [];
     const r_quant = modelPortfolio.metrics.return_pct / 100;
     const r_spy = modelPortfolio.benchmark.return_pct / 100;
     
-    // Ambas estrategias arrancan con $10,000 hace 36 meses
     const start_capital = 10000;
 
     for(let i = 0; i <= 36; i+=3) {
@@ -320,12 +319,10 @@ export default function Home() {
                             <span className="font-mono text-emerald-400 font-bold bg-emerald-900/30 px-2 py-0.5 rounded">{asset.weight}%</span>
                           </div>
                           
-                          {/* BARRA DE PESO */}
                           <div className="w-full bg-gray-900 h-1.5 rounded-full overflow-hidden mb-2">
                              <div className="bg-emerald-500 h-full" style={{width: `${asset.weight}%`}}></div>
                           </div>
 
-                          {/* REPORTE EXPLICATIVO (RATIONALE) */}
                           <div className="text-xs text-emerald-500/80 flex items-center gap-1.5">
                              <span className="text-sm">✔</span> {asset.rationale}
                           </div>
@@ -413,15 +410,15 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* NUEVA SECCIÓN: RADIOGRAFÍA FUNDAMENTAL DE LA CARTERA */}
+                    {/* RADIOGRAFÍA FUNDAMENTAL EXPANDIDA (6 MÉTRICAS) */}
                     {optResults.fundamental_metrics && (
                       <div className="bg-gray-900 p-6 rounded-xl border border-blue-900/30 shadow-lg">
                         <h2 className="text-lg font-bold text-blue-400 mb-4 flex items-center gap-2">
                           <span className="text-xl">🧬</span> Radiografía Fundamental (Data Lake)
                         </h2>
-                        <div className="grid grid-cols-3 gap-4">
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                           <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
-                            <span className="text-gray-500 text-xs block mb-1">Trailing P/E Promedio</span>
+                            <span className="text-gray-500 text-xs block mb-1">P/E Promedio</span>
                             <div className="flex justify-between items-end">
                               <span className="text-gray-400 line-through text-sm">{optResults.fundamental_metrics.current_pe}x</span>
                               <span className="text-white font-bold text-lg">{optResults.fundamental_metrics.optimal_pe}x</span>
@@ -441,8 +438,29 @@ export default function Home() {
                               <span className="text-blue-400 font-bold text-lg">{optResults.fundamental_metrics.optimal_roe}%</span>
                             </div>
                           </div>
+                          <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                            <span className="text-gray-500 text-xs block mb-1">Riesgo (Beta Promedio)</span>
+                            <div className="flex justify-between items-end">
+                              <span className="text-gray-400 line-through text-sm">{optResults.fundamental_metrics.current_beta}</span>
+                              <span className="text-orange-400 font-bold text-lg">{optResults.fundamental_metrics.optimal_beta}</span>
+                            </div>
+                          </div>
+                          <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                            <span className="text-gray-500 text-xs block mb-1">PEG Ratio (Valoración)</span>
+                            <div className="flex justify-between items-end">
+                              <span className="text-gray-400 line-through text-sm">{optResults.fundamental_metrics.current_peg}x</span>
+                              <span className="text-purple-400 font-bold text-lg">{optResults.fundamental_metrics.optimal_peg}x</span>
+                            </div>
+                          </div>
+                          <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                            <span className="text-gray-500 text-xs block mb-1">Crec. Ingresos (YoY)</span>
+                            <div className="flex justify-between items-end">
+                              <span className="text-gray-400 line-through text-sm">{optResults.fundamental_metrics.current_rev}%</span>
+                              <span className="text-green-400 font-bold text-lg">{optResults.fundamental_metrics.optimal_rev}%</span>
+                            </div>
+                          </div>
                         </div>
-                        <p className="text-xs text-gray-500 mt-4 text-center">La IA compara los balances contables de la cartera original vs la cartera recomendada.</p>
+                        <p className="text-xs text-gray-500 mt-4 text-center">La IA cruza tu Data Lake local para comparar la solidez de tu cartera actual vs. la optimizada.</p>
                       </div>
                     )}
 
