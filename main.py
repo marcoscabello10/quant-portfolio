@@ -32,7 +32,6 @@ TICKER_MAP = {
     "BF.B": "BF-B"
 }
 
-# Ñangareko omoambue hag̃ua ñe'ẽ papapýpe
 def safe_float(val, default=0.0):
     try:
         if val is None: return default
@@ -128,7 +127,7 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
-app = FastAPI(title="Quant Portfolio API", version="6.2.0", lifespan=lifespan)
+app = FastAPI(title="Quant Portfolio API", version="7.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -145,7 +144,7 @@ class RebalanceRequest(BaseModel):
 def fetch_historical_data(tickers_tuple: tuple, period: str = "5y"):
     return yf.download(list(tickers_tuple), period=period)['Close']
 
-# ================= 1. OPTIMIZADOR DE CARTERA (Personal) =================
+# ================= 1. OPTIMIZADOR DE CARTERA =================
 @app.post("/api/v1/portfolio/optimize")
 def optimize_portfolio(request: RebalanceRequest):
     mapped_portfolio = {}
@@ -268,6 +267,7 @@ def market_screener():
             rec = "MANTENER"
             
         data["ticker"] = ticker
+        data["name"] = data.get("name", ticker)
         data["ai_score"] = round(ai_score, 2)
         data["recommendation"] = rec
         results.append(data)
@@ -277,7 +277,7 @@ def market_screener():
     results = sorted(results, key=lambda x: (safe_float(x.get('ai_score')) + safe_float(x.get('roe'))), reverse=True)
     return {"top_picks": results[:24]}
 
-# ================= 3. CARTERA MODELO (MULTI-FACTOR & SECTOR NEUTRALITY) =================
+# ================= 3. CARTERA MODELO =================
 @app.get("/api/v1/model_portfolio")
 def get_model_portfolio():
     try:
@@ -290,48 +290,52 @@ def get_model_portfolio():
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         
-        # 1. SCORE MULTI-FACTOR (Z-SCORE APPROACH)
         sectors_dict = {}
+        rationale_dict = {}
+        name_dict = {}
+        
         for ticker, data in market_data.items():
             cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (ticker,))
             row = cursor.fetchone()
             ai_score = safe_float(row[0] if row[0] is not None else 0)
             
             sector = data.get("sector", "Desconocido")
+            name = data.get("name", ticker)
+            name_dict[ticker] = name
+            
             if sector == "Desconocido": continue
                 
-            # Extraer métricas para los 4 Pilares (oñemoambue papapýpe)
             roe = safe_float(data.get("roe"))
             gross_margin = safe_float(data.get("gross_margin"))
             debt_to_equity = safe_float(data.get("debt_to_equity"))
-            
             revenue_growth = safe_float(data.get("revenue_growth_yoy"))
             earnings_growth = safe_float(data.get("earnings_growth_yoy"))
             
             f_pe = data.get("forward_pe")
-            if f_pe is None:
-                f_pe = data.get("pe_ratio")
+            if f_pe is None: f_pe = data.get("pe_ratio")
             forward_pe = safe_float(f_pe, 50.0)
             peg_ratio = safe_float(data.get("peg_ratio"), 5.0)
             
-            # Pilar 1: QUALITY
             capped_roe = min(roe, 1.0)
             quality_score = (capped_roe + gross_margin) / 2
-            if debt_to_equity > 200:
-                 quality_score -= 0.2
+            if debt_to_equity > 200: quality_score -= 0.2
                  
-            # Pilar 2: GROWTH
             growth_score = (revenue_growth + earnings_growth) / 2
-            
-            # Pilar 3: VALUE 
             earnings_yield = (1 / forward_pe) if forward_pe > 0 else 0
             peg_score = 0.2 if peg_ratio < 1 else (-0.2 if peg_ratio > 3 else 0)
             value_score = earnings_yield + peg_score
             
-            # Pilar 4: SENTIMENT (Ya lo tenemos en ai_score)
-            
-            # COMPOSITE SCORE
             composite_score = (quality_score * 0.25) + (growth_score * 0.25) + (value_score * 0.25) + (ai_score * 0.25)
+            
+            # Constructor del Reporte Rationale
+            reasons = []
+            if quality_score > 0.3: reasons.append(f"Alta Calidad (ROE {capped_roe*100:.1f}%)")
+            if peg_ratio > 0 and peg_ratio < 1.5: reasons.append(f"Atractiva (PEG {peg_ratio:.1f})")
+            if ai_score > 0.15: reasons.append("Momentum IA Positivo")
+            if revenue_growth > 0.15: reasons.append("Alto Crecimiento")
+            if not reasons: reasons.append("Z-Score Multi-Factor Sólido")
+            
+            rationale_dict[ticker] = " + ".join(reasons)
             
             if sector not in sectors_dict:
                 sectors_dict[sector] = []
@@ -339,7 +343,6 @@ def get_model_portfolio():
             
         conn.close()
         
-        # 2. MUESTREO ESTRATIFICADO: Tomamos los 2 mejores de cada sector
         valid_stocks = []
         for sector, stocks in sectors_dict.items():
             stocks.sort(key=lambda x: x[1], reverse=True)
@@ -351,7 +354,6 @@ def get_model_portfolio():
         if len(top_tickers) < 5:
             top_tickers = ["AAPL", "MSFT", "NVDA", "V", "JNJ", "WMT", "JPM", "PG"]
             
-        # 3. OPTIMIZACIÓN DE MARKOWITZ Y BLACK-LITTERMAN
         tickers_tuple = tuple(sorted(top_tickers + ["SPY"]))
         df_all = fetch_historical_data(tickers_tuple, period="5y")
         
@@ -388,8 +390,16 @@ def get_model_portfolio():
         spy_vol = spy_returns.std() * np.sqrt(252)
         spy_sharpe = (spy_ret - 0.02) / spy_vol if spy_vol > 0 else 0
         
+        # Respuesta JSON ahora empaqueta el Rationale y el Nombre de Empresa
         return {
-            "assets": [{"ticker": k, "weight": round(v * 100, 2)} for k, v in weights.items() if v > 0],
+            "assets": [
+                {
+                    "ticker": k, 
+                    "name": name_dict.get(k, k),
+                    "weight": round(v * 100, 2),
+                    "rationale": rationale_dict.get(k, "Selección Institucional")
+                } for k, v in weights.items() if v > 0
+            ],
             "metrics": {
                 "return_pct": round(ret * 100, 2),
                 "volatility_pct": round(vol * 100, 2),

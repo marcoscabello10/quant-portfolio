@@ -28,6 +28,8 @@ def build_data_lake():
                 continue
                 
             market_data[t] = {
+                # EXTRAEMOS EL NOMBRE OFICIAL DE LA EMPRESA
+                "name": info.get("shortName", info.get("longName", t)),
                 "sector": info.get("sector", "Desconocido"),
                 "industry": info.get("industry", "Desconocida"),
                 
@@ -58,7 +60,7 @@ def build_data_lake():
                 
                 "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
-            print(" ✅ OK.")
+            print(f" ✅ OK ({market_data[t]['name']}).")
             time.sleep(1.5)
         except Exception:
             print(f" ❌ Error.")
