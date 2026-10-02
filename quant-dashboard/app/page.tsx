@@ -140,22 +140,21 @@ export default function Home() {
     return data;
   };
 
-  // NUEVO: BACKTEST A 3 AÑOS (SIMULACIÓN HISTÓRICA INVERSA)
+  // BACKTEST A 3 AÑOS (CORREGIDO - FORWARD BACKTEST)
   const generateBacktestData = () => {
     if (!modelPortfolio || !modelPortfolio.metrics) return [];
     const data = [];
     const r_quant = modelPortfolio.metrics.return_pct / 100;
     const r_spy = modelPortfolio.benchmark.return_pct / 100;
     
-    // Capitalización Inversa: Si hoy tengo 10k, ¿cuánto tenía hace 3 años?
-    const start_quant = 10000 / Math.pow(1 + r_quant, 3);
-    const start_spy = 10000 / Math.pow(1 + r_spy, 3);
+    // Ambas estrategias arrancan con $10,000 hace 36 meses
+    const start_capital = 10000;
 
     for(let i = 0; i <= 36; i+=3) {
       data.push({
-        period: i === 36 ? "Hoy" : `-${36 - i}m`,
-        "Estrategia Quant": Math.round(start_quant * Math.pow(1 + r_quant, i/12)),
-        "S&P 500 (SPY)": Math.round(start_spy * Math.pow(1 + r_spy, i/12))
+        period: i === 0 ? "-36m" : i === 36 ? "Hoy" : `-${36 - i}m`,
+        "Estrategia Quant": Math.round(start_capital * Math.pow(1 + r_quant, i/12)),
+        "S&P 500 (SPY)": Math.round(start_capital * Math.pow(1 + r_spy, i/12))
       });
     }
     return data;
@@ -345,7 +344,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* ================= VISTA OPTIMIZADOR CON EXCEL ================= */}
+        {/* ================= VISTA OPTIMIZADOR CON EXCEL E INYECCIÓN FUNDAMENTAL ================= */}
         {activeTab === 'optimizer' && (
            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in">
               <div className="lg:col-span-1 bg-gray-900 p-6 rounded-b-xl rounded-tr-xl border border-gray-800 shadow-lg h-fit">
@@ -413,6 +412,40 @@ export default function Home() {
                         </div>
                       </div>
                     </div>
+
+                    {/* NUEVA SECCIÓN: RADIOGRAFÍA FUNDAMENTAL DE LA CARTERA */}
+                    {optResults.fundamental_metrics && (
+                      <div className="bg-gray-900 p-6 rounded-xl border border-blue-900/30 shadow-lg">
+                        <h2 className="text-lg font-bold text-blue-400 mb-4 flex items-center gap-2">
+                          <span className="text-xl">🧬</span> Radiografía Fundamental (Data Lake)
+                        </h2>
+                        <div className="grid grid-cols-3 gap-4">
+                          <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                            <span className="text-gray-500 text-xs block mb-1">Trailing P/E Promedio</span>
+                            <div className="flex justify-between items-end">
+                              <span className="text-gray-400 line-through text-sm">{optResults.fundamental_metrics.current_pe}x</span>
+                              <span className="text-white font-bold text-lg">{optResults.fundamental_metrics.optimal_pe}x</span>
+                            </div>
+                          </div>
+                          <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                            <span className="text-gray-500 text-xs block mb-1">Dividend Yield</span>
+                            <div className="flex justify-between items-end">
+                              <span className="text-gray-400 line-through text-sm">{optResults.fundamental_metrics.current_yield}%</span>
+                              <span className="text-emerald-400 font-bold text-lg">{optResults.fundamental_metrics.optimal_yield}%</span>
+                            </div>
+                          </div>
+                          <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                            <span className="text-gray-500 text-xs block mb-1">ROE Promedio</span>
+                            <div className="flex justify-between items-end">
+                              <span className="text-gray-400 line-through text-sm">{optResults.fundamental_metrics.current_roe}%</span>
+                              <span className="text-blue-400 font-bold text-lg">{optResults.fundamental_metrics.optimal_roe}%</span>
+                            </div>
+                          </div>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-4 text-center">La IA compara los balances contables de la cartera original vs la cartera recomendada.</p>
+                      </div>
+                    )}
+
                     <div className="bg-gray-900 p-6 rounded-xl border border-gray-800 shadow-lg h-80 flex flex-col">
                       <h2 className="text-lg font-bold text-gray-200 mb-1">Proyección a 10 Años</h2>
                       <ResponsiveContainer width="100%" height="100%">
