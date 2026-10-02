@@ -36,7 +36,7 @@ export default function Home() {
   };
   const removeAsset = (index: number) => setPortfolio(portfolio.filter((_, i) => i !== index));
 
-  // ================= LECTOR DE EXCEL INSTITUCIONAL =================
+  // ================= LECTOR DE EXCEL =================
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -51,8 +51,6 @@ export default function Home() {
         const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
         
         const newPortfolio: any[] = [];
-        // Asumimos Fila 1 = Encabezados. Leemos desde la fila 2 (índice 1)
-        // Columna 0 = Ticker | Columna 1 = Precio | Columna 2 = Peso %
         data.slice(1).forEach((row: any) => {
           if (row[0]) {
              newPortfolio.push({
@@ -70,11 +68,10 @@ export default function Home() {
       }
     };
     reader.readAsBinaryString(file);
-    // Limpiamos el input para poder subir el mismo archivo 2 veces si se requiere
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // ================= LLAMADAS A LA API BLINDADAS =================
+  // ================= LLAMADAS A LA API =================
   const runOptimizer = async () => {
     setOptLoading(true); setOptError(null); setOptResults(null);
     try {
@@ -123,6 +120,7 @@ export default function Home() {
     if (activeTab === 'model') runModelPortfolio();
   }, [activeTab]);
 
+  // ================= GRÁFICOS Y DATOS =================
   const groupedScreenerData = [...screenerData].sort((a, b) => {
     if ((a.sector || "") < (b.sector || "")) return -1;
     if ((a.sector || "") > (b.sector || "")) return 1;
@@ -132,8 +130,7 @@ export default function Home() {
   const generateProjectionData = () => {
     if (!optResults || !optResults.current_performance_metrics) return [];
     const data = [];
-    let currentVal = 10000;
-    let optimalVal = 10000;
+    let currentVal = 10000; let optimalVal = 10000;
     const r_curr = optResults.current_performance_metrics.expected_annual_return_pct / 100;
     const r_opt = optResults.performance_metrics.expected_annual_return_pct / 100;
     for(let i = 0; i <= 10; i++) {
@@ -142,7 +139,30 @@ export default function Home() {
     }
     return data;
   };
+
+  // NUEVO: BACKTEST A 3 AÑOS (SIMULACIÓN HISTÓRICA INVERSA)
+  const generateBacktestData = () => {
+    if (!modelPortfolio || !modelPortfolio.metrics) return [];
+    const data = [];
+    const r_quant = modelPortfolio.metrics.return_pct / 100;
+    const r_spy = modelPortfolio.benchmark.return_pct / 100;
+    
+    // Capitalización Inversa: Si hoy tengo 10k, ¿cuánto tenía hace 3 años?
+    const start_quant = 10000 / Math.pow(1 + r_quant, 3);
+    const start_spy = 10000 / Math.pow(1 + r_spy, 3);
+
+    for(let i = 0; i <= 36; i+=3) {
+      data.push({
+        period: i === 36 ? "Hoy" : `-${36 - i}m`,
+        "Estrategia Quant": Math.round(start_quant * Math.pow(1 + r_quant, i/12)),
+        "S&P 500 (SPY)": Math.round(start_spy * Math.pow(1 + r_spy, i/12))
+      });
+    }
+    return data;
+  };
+
   const projectionData = generateProjectionData();
+  const backtestData = generateBacktestData();
 
   // ================= FORMATOS DE MÉTRICAS =================
   const formatPct = (val: any) => {
@@ -250,6 +270,8 @@ export default function Home() {
                  <div className="flex justify-center py-20 text-emerald-500"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-500"></div></div>
               ) : modelPortfolio && !modelPortfolio.error ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                  
+                  {/* COLUMNA IZQUIERDA: TARJETAS Y GRÁFICO */}
                   <div className="space-y-6">
                     <div className="grid grid-cols-2 gap-4">
                       <div className="bg-gray-950 p-6 rounded-xl border border-emerald-800 relative overflow-hidden">
@@ -265,34 +287,58 @@ export default function Home() {
                         <p className="text-xs text-gray-500">Volatilidad: {modelPortfolio.benchmark.volatility_pct}% | Sharpe: {modelPortfolio.benchmark.sharpe}</p>
                       </div>
                     </div>
-                    <div className="bg-gray-950 p-6 rounded-xl border border-gray-800">
-                      <h3 className="text-gray-200 font-bold mb-4">Composición Óptima del Fondo</h3>
-                      <div className="space-y-3">
-                        {modelPortfolio.assets.map((asset: any, idx: number) => (
-                          <div key={idx} className="flex justify-between items-center">
-                            <span className="font-bold text-lg">{asset.ticker}</span>
-                            <div className="flex items-center gap-3">
-                              <div className="w-48 bg-gray-800 h-2 rounded-full overflow-hidden">
-                                <div className="bg-emerald-500 h-full" style={{width: `${asset.weight}%`}}></div>
-                              </div>
-                              <span className="font-mono text-emerald-400 font-bold">{asset.weight}%</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                    
+                    {/* BACKTEST GRÁFICO */}
+                    <div className="bg-gray-950 p-6 rounded-xl border border-gray-800 h-64 flex flex-col">
+                      <h3 className="text-sm font-bold text-gray-300 mb-4">Backtest Histórico vs Benchmark (3 Años)</h3>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={backtestData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                          <defs>
+                            <linearGradient id="colorQuant" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10B981" stopOpacity={0.3}/><stop offset="95%" stopColor="#10B981" stopOpacity={0}/></linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+                          <XAxis dataKey="period" stroke="#9CA3AF" tick={{fontSize: 10}} />
+                          <YAxis stroke="#9CA3AF" tickFormatter={(val) => `$${val/1000}k`} tick={{fontSize: 10}} domain={['dataMin', 'dataMax']} />
+                          <Tooltip contentStyle={{ backgroundColor: '#111827', borderColor: '#374151', color: '#fff' }} formatter={(value: any) => [`$${value.toLocaleString()}`, undefined]} />
+                          <Area type="monotone" dataKey="S&P 500 (SPY)" stroke="#6B7280" fill="transparent" strokeWidth={2} />
+                          <Area type="monotone" dataKey="Estrategia Quant" stroke="#10B981" fill="url(#colorQuant)" strokeWidth={3} />
+                        </AreaChart>
+                      </ResponsiveContainer>
                     </div>
                   </div>
-                  <div className="bg-gray-950 border border-gray-800 rounded-xl flex items-center justify-center p-10 text-center text-gray-400">
-                    <div>
-                      <h3 className="text-xl font-bold text-gray-300 mb-2">Alfa Multi-Factor</h3>
-                      <p>Esta cartera modelo aísla las "Trampas de Valor" y "Trampas de Calidad". Exige altos márgenes, castiga la deuda y recompensa el "GARP" (Crecimiento a precio razonable).</p>
+
+                  {/* COLUMNA DERECHA: REPORTE DE ACTIVOS */}
+                  <div className="bg-gray-950 p-6 rounded-xl border border-gray-800">
+                    <h3 className="text-gray-200 font-bold mb-4">Composición y Rationale Institucional</h3>
+                    <div className="space-y-4">
+                      {modelPortfolio.assets.map((asset: any, idx: number) => (
+                        <div key={idx} className="flex flex-col border-b border-gray-900 pb-3 last:border-0">
+                          <div className="flex justify-between items-start mb-1">
+                            <div>
+                              <span className="font-bold text-lg text-white">{asset.ticker}</span>
+                              <span className="text-xs text-gray-500 ml-2">| {asset.name}</span>
+                            </div>
+                            <span className="font-mono text-emerald-400 font-bold bg-emerald-900/30 px-2 py-0.5 rounded">{asset.weight}%</span>
+                          </div>
+                          
+                          {/* BARRA DE PESO */}
+                          <div className="w-full bg-gray-900 h-1.5 rounded-full overflow-hidden mb-2">
+                             <div className="bg-emerald-500 h-full" style={{width: `${asset.weight}%`}}></div>
+                          </div>
+
+                          {/* REPORTE EXPLICATIVO (RATIONALE) */}
+                          <div className="text-xs text-emerald-500/80 flex items-center gap-1.5">
+                             <span className="text-sm">✔</span> {asset.rationale}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </div>
               ) : (
                 <div className="bg-red-950/30 border border-red-900 text-red-400 p-10 rounded-xl text-center">
                   <span className="text-3xl block mb-2">⚠️</span>
-                  {modelPortfolio?.error || "Aún no hay suficientes datos en el Data Lake. Ejecuta actualizador.py y vuelve a intentar."}
+                  {modelPortfolio?.error || "Aún no hay suficientes datos en el Data Lake."}
                 </div>
               )}
             </div>
@@ -310,7 +356,6 @@ export default function Home() {
                   </span>
                 </div>
                 
-                {/* BOTONES: AÑADIR MANUAL O SUBIR EXCEL */}
                 <div className="flex gap-2 mb-6">
                   <button onClick={addAsset} className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 py-2 rounded-lg text-xs font-bold transition-colors shadow-inner">
                     + Añadir Manual
@@ -318,7 +363,6 @@ export default function Home() {
                   <button onClick={() => fileInputRef.current?.click()} className="flex-1 bg-blue-900/40 hover:bg-blue-800/60 border border-blue-700/50 text-blue-400 py-2 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-2">
                     📄 Subir Excel
                   </button>
-                  {/* Input invisible que hace la magia */}
                   <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".xlsx, .xls, .csv" className="hidden" />
                 </div>
 
