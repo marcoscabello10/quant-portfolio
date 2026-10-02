@@ -120,7 +120,7 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
-app = FastAPI(title="Quant Portfolio API", version="5.0.0", lifespan=lifespan)
+app = FastAPI(title="Quant Portfolio API", version="7.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -137,7 +137,7 @@ class RebalanceRequest(BaseModel):
 def fetch_historical_data(tickers_tuple: tuple, period: str = "5y"):
     return yf.download(list(tickers_tuple), period=period)['Close']
 
-# ================= 1. OPTIMIZADOR DE CARTERA =================
+# ================= 1. OPTIMIZADOR DE CARTERA (Personal) =================
 @app.post("/api/v1/portfolio/optimize")
 def optimize_portfolio(request: RebalanceRequest):
     mapped_portfolio = {}
@@ -266,12 +266,10 @@ def market_screener():
 
     conn.close()
     
-    # Ordenamos combinando IA, Rentabilidad y Crecimiento
     results = sorted(results, key=lambda x: (x.get('ai_score', 0) + (x.get('roe') or 0)), reverse=True)
-    # Mostramos el Top 24 en lugar del Top 15
     return {"top_picks": results[:24]}
 
-# ================= 3. CARTERA MODELO (NUEVO DINERO) =================
+# ================= 3. CARTERA MODELO (4 PILARES: QUALITY, VALUE, GROWTH, SENTIMENT) =================
 @app.get("/api/v1/model_portfolio")
 def get_model_portfolio():
     try:
@@ -281,26 +279,64 @@ def get_model_portfolio():
         with open("market_data.json", "r") as f:
             market_data = json.load(f)
             
-        # Seleccionamos las 10 mejores acciones cruzando IA + ROE
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        valid_stocks = []
-        for t, data in market_data.items():
-            cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (t,))
+        
+        sectors_dict = {}
+        for ticker, data in market_data.items():
+            # PILAR 1: SENTIMENT (IA)
+            cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (ticker,))
             row = cursor.fetchone()
-            score = row[0] if row[0] is not None else 0
-            roe = data.get("roe") or 0
-            if roe > 0.05: # Filtro mínimo de calidad
-                valid_stocks.append((t, score + roe))
+            ai_score = row[0] if row[0] is not None else 0
+            
+            sector = data.get("sector", "Desconocido")
+            if sector == "Desconocido": continue
+                
+            # PILAR 2: QUALITY (Rentabilidad sin exceso de deuda)
+            roe = min(data.get("roe") or 0, 1.0) # Capeado al 100% para evitar errores contables
+            gross_margin = data.get("gross_margin") or 0
+            debt_eq = data.get("debt_to_equity") or 0
+            quality_score = roe + gross_margin
+            if debt_eq > 200: # Yahoo devuelve D/E x 100 (200 = 2x Capital). Penalizamos alta deuda.
+                quality_score -= 0.15 
+                
+            # PILAR 3: GROWTH (Crecimiento dual)
+            rev_growth = data.get("revenue_growth_yoy") or 0
+            earn_growth = data.get("earnings_growth_yoy") or 0
+            growth_score = rev_growth + earn_growth
+            
+            # PILAR 4: VALUE (GARP = Crecimiento a Precio Razonable)
+            fwd_pe = data.get("forward_pe") or data.get("pe_ratio") or 50
+            earnings_yield = (1 / fwd_pe) if fwd_pe > 0 else 0
+            peg = data.get("peg_ratio") or 3
+            value_score = earnings_yield
+            if 0 < peg < 1.5: 
+                value_score += 0.10 # Bonus si es GARP puro
+            
+            # COMPOSITE Z-SCORE (Ponderación balanceada "All-Weather")
+            # Multiplicamos Value x 5 para igualar su escala con el resto de las métricas
+            z_score = (ai_score * 0.25) + (quality_score * 0.25) + (growth_score * 0.25) + (value_score * 5 * 0.25)
+            
+            if sector not in sectors_dict:
+                sectors_dict[sector] = []
+            sectors_dict[sector].append((ticker, z_score))
+            
         conn.close()
         
+        # MUESTREO ESTRATIFICADO: Seleccionamos estrictamente a los 2 campeones de cada sector
+        valid_stocks = []
+        for sector, stocks in sectors_dict.items():
+            stocks.sort(key=lambda x: x[1], reverse=True)
+            valid_stocks.extend(stocks[:2])
+            
+        # De todos los campeones sectoriales, tomamos a los 10 mejores del mercado en general
         valid_stocks.sort(key=lambda x: x[1], reverse=True)
         top_tickers = [x[0] for x in valid_stocks[:10]]
         
-        # Pool de empresas de élite por si el Data Lake es muy pequeño
         if len(top_tickers) < 5:
             top_tickers = ["AAPL", "MSFT", "NVDA", "V", "JNJ", "WMT", "JPM", "PG"]
             
+        # BLACK-LITTERMAN + MARKOWITZ
         tickers_tuple = tuple(sorted(top_tickers + ["SPY"]))
         df_all = fetch_historical_data(tickers_tuple, period="5y")
         
@@ -314,13 +350,24 @@ def get_model_portfolio():
         mu = mean_historical_return(df_universe)
         S = CovarianceShrinkage(df_universe).ledoit_wolf()
         
-        # Optimizamos limitando cada activo al 25% para forzar diversificación real
-        ef = EfficientFrontier(mu, S, weight_bounds=(0.05, 0.25))
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        views_dict = {}
+        for ticker in valid_t:
+            cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (ticker,))
+            row = cursor.fetchone()
+            score = row[0] if row[0] is not None else 0
+            views_dict[ticker] = mu[ticker] + (score * 0.10)
+        conn.close()
+
+        bl = BlackLittermanModel(S, pi=mu, absolute_views=views_dict)
+        mu_bl = bl.bl_returns()
+        
+        ef = EfficientFrontier(mu_bl, S, weight_bounds=(0.05, 0.25))
         ef.max_sharpe()
         ret, vol, sharpe = ef.portfolio_performance()
         weights = ef.clean_weights(cutoff=0.01)
         
-        # Benchmark contra el mercado (SPY)
         spy_returns = df_all['SPY'].pct_change().dropna()
         spy_ret = spy_returns.mean() * 252
         spy_vol = spy_returns.std() * np.sqrt(252)

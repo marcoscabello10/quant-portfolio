@@ -48,6 +48,7 @@ def build_data_lake():
                 
                 # Crecimiento y Caja (Growth / Cash)
                 "revenue_growth_yoy": info.get("revenueGrowth"),
+                "earnings_growth_yoy": info.get("earningsGrowth"),
                 "free_cash_flow": info.get("freeCashflow"),
                 "operating_cash_flow": info.get("operatingCashflow"),
                 
