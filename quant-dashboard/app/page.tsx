@@ -1,4 +1,4 @@
-"""use client""";
+"use client";
 
 import { useState, useEffect, useRef } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
