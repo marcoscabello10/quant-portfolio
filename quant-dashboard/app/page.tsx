@@ -269,7 +269,6 @@ export default function Home() {
               ) : modelPortfolio && !modelPortfolio.error ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
                   
-                  {/* COLUMNA IZQUIERDA: TARJETAS Y GRÁFICO */}
                   <div className="space-y-6">
                     <div className="grid grid-cols-2 gap-4">
                       <div className="bg-gray-950 p-6 rounded-xl border border-emerald-800 relative overflow-hidden">
@@ -286,7 +285,6 @@ export default function Home() {
                       </div>
                     </div>
                     
-                    {/* BACKTEST GRÁFICO */}
                     <div className="bg-gray-950 p-6 rounded-xl border border-gray-800 h-64 flex flex-col">
                       <h3 className="text-sm font-bold text-gray-300 mb-4">Backtest Histórico vs Benchmark (3 Años)</h3>
                       <ResponsiveContainer width="100%" height="100%">
@@ -305,7 +303,6 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* COLUMNA DERECHA: REPORTE DE ACTIVOS */}
                   <div className="bg-gray-950 p-6 rounded-xl border border-gray-800">
                     <h3 className="text-gray-200 font-bold mb-4">Composición y Rationale Institucional</h3>
                     <div className="space-y-4">
@@ -352,7 +349,7 @@ export default function Home() {
                   </span>
                 </div>
                 
-                <div className="flex gap-2 mb-6">
+                <div className="flex gap-2 mb-4">
                   <button onClick={addAsset} className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 py-2 rounded-lg text-xs font-bold transition-colors shadow-inner">
                     + Añadir Manual
                   </button>
@@ -360,6 +357,26 @@ export default function Home() {
                     📄 Subir Excel
                   </button>
                   <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".xlsx, .xls, .csv" className="hidden" />
+                </div>
+
+                {/* INSTRUCCIONES DEL EXCEL */}
+                <div className="mb-6 bg-gray-950/50 p-3 rounded-lg border border-gray-800 text-xs text-gray-400">
+                  <p className="font-bold text-gray-300 mb-2">ℹ️ Formato requerido para el Excel:</p>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="bg-gray-900 border border-gray-700 py-1.5 rounded">
+                      <span className="text-[10px] text-gray-500 block mb-0.5">Columna A</span>
+                      <span className="text-white font-bold">Ticker</span>
+                    </div>
+                    <div className="bg-gray-900 border border-gray-700 py-1.5 rounded">
+                      <span className="text-[10px] text-gray-500 block mb-0.5">Columna B</span>
+                      <span className="text-gray-400">Nominales</span>
+                    </div>
+                    <div className="bg-gray-900 border border-gray-700 py-1.5 rounded">
+                      <span className="text-[10px] text-gray-500 block mb-0.5">Columna C</span>
+                      <span className="text-emerald-400 font-bold">Peso %</span>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[10px] text-gray-500 text-center">* La fila 1 se asume como encabezado. La columna de nominales/precios (B) no afecta el cálculo pero debe existir el espacio.</p>
                 </div>
 
                 <div className="space-y-3 mb-6">
@@ -410,7 +427,6 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* RADIOGRAFÍA FUNDAMENTAL EXPANDIDA (6 MÉTRICAS) */}
                     {optResults.fundamental_metrics && (
                       <div className="bg-gray-900 p-6 rounded-xl border border-blue-900/30 shadow-lg">
                         <h2 className="text-lg font-bold text-blue-400 mb-4 flex items-center gap-2">
