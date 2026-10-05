@@ -36,7 +36,7 @@ export default function Home() {
   };
   const removeAsset = (index: number) => setPortfolio(portfolio.filter((_, i) => i !== index));
 
-  // ================= LECTOR DE EXCEL =================
+  // ================= LECTOR DE EXCEL CON AUTO-CORRECTOR =================
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -50,17 +50,37 @@ export default function Home() {
         const ws = wb.Sheets[wsname];
         const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
         
-        const newPortfolio: any[] = [];
+        const tempPortfolio: any[] = [];
+        let sumWeights = 0;
+
+        // Leemos fila por fila (saltando el encabezado)
         data.slice(1).forEach((row: any) => {
           if (row[0]) {
-             newPortfolio.push({
+             let wStr = String(row[2] || "0").replace('%', '').replace(',', '.').trim();
+             let wNum = parseFloat(wStr);
+             if (isNaN(wNum)) wNum = 0;
+             
+             sumWeights += wNum;
+             
+             tempPortfolio.push({
                ticker: String(row[0]).trim().toUpperCase(),
-               weight: String(row[2] || 0)
+               rawWeight: wNum
              });
           }
         });
-        if (newPortfolio.length > 0) {
-           setPortfolio(newPortfolio);
+
+        if (tempPortfolio.length > 0) {
+           // Si la suma de pesos es <= 1.05, Excel envió decimales (Ej: 0.0427). Multiplicamos por 100.
+           const isDecimalScale = sumWeights > 0 && sumWeights <= 1.05;
+           
+           const finalPortfolio = tempPortfolio.map(item => ({
+             ticker: item.ticker,
+             weight: isDecimalScale 
+               ? String(+(item.rawWeight * 100).toFixed(2)) 
+               : String(+(item.rawWeight).toFixed(2))
+           }));
+           
+           setPortfolio(finalPortfolio);
            setOptError(null);
         }
       } catch (error) {
@@ -140,7 +160,6 @@ export default function Home() {
     return data;
   };
 
-  // BACKTEST A 3 AÑOS (FORWARD BACKTEST)
   const generateBacktestData = () => {
     if (!modelPortfolio || !modelPortfolio.metrics) return [];
     const data = [];
@@ -338,7 +357,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* ================= VISTA OPTIMIZADOR CON EXCEL E INYECCIÓN FUNDAMENTAL ================= */}
+        {/* ================= VISTA OPTIMIZADOR CON EXCEL ================= */}
         {activeTab === 'optimizer' && (
            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in">
               <div className="lg:col-span-1 bg-gray-900 p-6 rounded-b-xl rounded-tr-xl border border-gray-800 shadow-lg h-fit">
@@ -362,7 +381,7 @@ export default function Home() {
                 {/* INSTRUCCIONES DEL EXCEL */}
                 <div className="mb-6 bg-gray-950/50 p-3 rounded-lg border border-gray-800 text-xs text-gray-400">
                   <p className="font-bold text-gray-300 mb-2">ℹ️ Formato requerido para el Excel:</p>
-                  <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="grid grid-cols-4 gap-2 text-center">
                     <div className="bg-gray-900 border border-gray-700 py-1.5 rounded">
                       <span className="text-[10px] text-gray-500 block mb-0.5">Columna A</span>
                       <span className="text-white font-bold">Ticker</span>
@@ -375,8 +394,12 @@ export default function Home() {
                       <span className="text-[10px] text-gray-500 block mb-0.5">Columna C</span>
                       <span className="text-emerald-400 font-bold">Peso %</span>
                     </div>
+                    <div className="bg-gray-900 border border-gray-700 py-1.5 rounded">
+                      <span className="text-[10px] text-gray-500 block mb-0.5">Columna D</span>
+                      <span className="text-blue-400 font-bold leading-tight">Precio Prom.</span>
+                    </div>
                   </div>
-                  <p className="mt-2 text-[10px] text-gray-500 text-center">* La fila 1 se asume como encabezado. La columna de nominales/precios (B) no afecta el cálculo pero debe existir el espacio.</p>
+                  <p className="mt-2 text-[10px] text-gray-500 text-center">* La fila 1 se asume como encabezado. (B) y (D) preparadas para el futuro cálculo de P&L.</p>
                 </div>
 
                 <div className="space-y-3 mb-6">
