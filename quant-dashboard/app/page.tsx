@@ -13,10 +13,14 @@ export default function Home() {
     { ticker: 'MRK', weight: '0.05' },
     { ticker: 'BRKB', weight: '4.81' },
   ]);
+  
+  // NUEVO ESTADO: Peso Mínimo Core Override
+  const [coreMinOverride, setCoreMinOverride] = useState<string>('');
+  
   const [optResults, setOptResults] = useState<any>(null);
   const [optLoading, setOptLoading] = useState(false);
   const [optError, setOptError] = useState<string | null>(null);
-  const [viewActionPlan, setViewActionPlan] = useState<'standard' | 'cs'>('cs'); // Toggle para ver las órdenes
+  const [viewActionPlan, setViewActionPlan] = useState<'standard' | 'cs'>('cs');
 
   const [screenerData, setScreenerData] = useState<any[]>([]);
   const [screenLoading, setScreenLoading] = useState(false);
@@ -73,7 +77,7 @@ export default function Home() {
            setOptError(null);
         }
       } catch (error) {
-        setOptError("Error al leer el archivo Excel.");
+        setOptError("Error al leer el archivo Excel. Verifica que tenga las columnas correctas.");
       }
     };
     reader.readAsBinaryString(file);
@@ -88,8 +92,14 @@ export default function Home() {
       portfolio.forEach(item => { if (item.ticker.trim() !== '') payload[item.ticker.trim().toUpperCase()] = parseWeight(item.weight); });
       if (Object.keys(payload).length < 2) throw new Error("Requiere al menos 2 activos.");
       
+      const payloadParams: any = { current_portfolio: payload };
+      if (coreMinOverride.trim() !== '') {
+          const cVal = parseFloat(coreMinOverride);
+          if (!isNaN(cVal) && cVal > 0) payloadParams.core_min_weight = cVal;
+      }
+
       const res = await fetch('https://quant-api-3778.onrender.com/api/v1/portfolio/optimize', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ current_portfolio: payload })
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payloadParams)
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Error en el servidor Quant");
@@ -104,7 +114,7 @@ export default function Home() {
     try {
       const res = await fetch('https://quant-api-3778.onrender.com/api/v1/screener');
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail);
+      if (!res.ok) throw new Error(data.detail || "Error al conectar con Data Lake");
       setScreenerData(data.top_picks || []);
     } catch (err: any) { setScreenError(err.message); }
     setScreenLoading(false);
@@ -116,9 +126,11 @@ export default function Home() {
     try {
       const res = await fetch('https://quant-api-3778.onrender.com/api/v1/model_portfolio');
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail);
+      if (!res.ok) throw new Error(data.detail || "Fallo al calcular Frontera Eficiente");
       setModelPortfolio(data);
-    } catch (err: any) { setModelPortfolio({ error: err.message }); }
+    } catch (err: any) {
+      setModelPortfolio({ error: err.message });
+    }
     setModelLoading(false);
   };
 
@@ -127,7 +139,7 @@ export default function Home() {
     if (activeTab === 'model') runModelPortfolio();
   }, [activeTab]);
 
-  // ================= GRÁFICOS =================
+  // ================= GRÁFICOS Y DATOS =================
   const groupedScreenerData = [...screenerData].sort((a, b) => {
     if ((a.sector || "") < (b.sector || "")) return -1;
     if ((a.sector || "") > (b.sector || "")) return 1;
@@ -376,6 +388,23 @@ export default function Home() {
                     );
                   })}
                 </div>
+
+                {/* OVERRIDE MANUAL PARA EL PESO CORE */}
+                <div className="bg-emerald-950/20 p-3 rounded-lg border border-emerald-900/50 mb-6">
+                  <label className="text-xs text-emerald-400 font-bold mb-2 flex justify-between">
+                    <span>🛡️ Peso Mínimo por Activo Core (%)</span>
+                    <span className="text-gray-500 font-normal">Opcional</span>
+                  </label>
+                  <input 
+                    type="number" 
+                    placeholder="Ej: 15 (Dejar vacío para Automático)" 
+                    value={coreMinOverride} 
+                    onChange={(e) => setCoreMinOverride(e.target.value)} 
+                    className="w-full bg-gray-900 border border-gray-700 rounded text-white focus:border-emerald-500 text-sm px-3 py-2 placeholder-gray-600"
+                  />
+                  <p className="text-[10px] text-gray-500 mt-1">Obliga al algoritmo a darle este peso a tus mejores activos.</p>
+                </div>
+
                 <button onClick={runOptimizer} disabled={optLoading} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-700 text-white font-bold py-3 rounded-lg transition-colors shadow-lg">
                   {optLoading ? "Calculando Estrategias..." : "Simular Escenarios (Dual)"}
                 </button>
@@ -412,11 +441,10 @@ export default function Home() {
                           <div className="flex justify-between"><span className="text-gray-400">Volatilidad:</span><span className="text-lg font-bold text-emerald-400">{optResults.cs_performance_metrics.annual_volatility_pct}%</span></div>
                           <div className="flex justify-between border-t border-gray-800 pt-2"><span className="text-gray-400">Sharpe Ratio:</span><span className="text-sm font-bold text-emerald-300">{optResults.cs_performance_metrics.sharpe_ratio}</span></div>
                         </div>
-                        <p className="text-[10px] text-emerald-500/70 mt-3">Suelo protegido para: {optResults.cs_performance_metrics.core_assets.join(', ')}</p>
+                        <p className="text-[10px] text-emerald-500/70 mt-3">Suelo ({optResults.applied_core_min_weight}%) protegido para: {optResults.cs_performance_metrics.core_assets.join(', ')}</p>
                       </div>
                     </div>
 
-                    {/* RADIOGRAFÍA FUNDAMENTAL EXPANDIDA DUAL */}
                     {optResults.fundamental_metrics && (
                       <div className="bg-gray-900 p-6 rounded-xl border border-gray-800 shadow-lg">
                         <h2 className="text-lg font-bold text-gray-200 mb-4 flex items-center gap-2">
@@ -445,7 +473,6 @@ export default function Home() {
                       </div>
                     )}
 
-                    {/* GRÁFICO COMPARATIVO DE BARRAS DUAL */}
                     <div className="bg-gray-900 p-6 rounded-xl border border-gray-800 shadow-lg">
                       <h3 className="text-lg font-bold text-gray-300 mb-4">Transición de Pesos en Cartera</h3>
                       <div className="h-64 w-full">
@@ -483,7 +510,6 @@ export default function Home() {
                       </ResponsiveContainer>
                     </div>
 
-                    {/* PLAN DE ACCIÓN CON TOGGLE */}
                     <div className="bg-gray-900 p-6 rounded-xl border border-gray-800 shadow-lg">
                       <div className="flex justify-between items-center mb-6 border-b border-gray-800 pb-4">
                         <h2 className="text-xl font-bold text-gray-200">Plan de Acción Ejecutivo</h2>
