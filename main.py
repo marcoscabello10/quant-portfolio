@@ -57,20 +57,16 @@ def init_db():
 def get_sentiment_from_api(titles):
     if not titles: return 0
     if not HF_API_TOKEN: return 0
-        
     API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
     headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-    
     for attempt in range(3):
         try:
             response = requests.post(API_URL, headers=headers, json={"inputs": titles})
             results = response.json()
-            
             if isinstance(results, dict) and 'error' in results:
                 wait_time = results.get('estimated_time', 15)
                 time.sleep(wait_time + 2)
                 continue
-                
             score_total = 0
             if isinstance(results, list):
                 for item in results:
@@ -96,7 +92,6 @@ def daily_sentiment_job():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     headers = {'User-Agent': 'Mozilla/5.0'}
-
     for i, ticker in enumerate(tickers, 1):
         try:
             time.sleep(2)
@@ -106,9 +101,7 @@ def daily_sentiment_job():
             soup = BeautifulSoup(response.content, 'xml')
             titles = [item.title.text for item in soup.find_all('item') if item.title][:10]
             if not titles: continue
-            
             avg_score = get_sentiment_from_api(titles)
-
             cursor.execute('''
                 INSERT OR REPLACE INTO sentiment_history (date, ticker, sentiment_score, articles_analyzed)
                 VALUES (?, ?, ?, ?)
@@ -127,7 +120,7 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
-app = FastAPI(title="Quant Portfolio API", version="8.5.0", lifespan=lifespan)
+app = FastAPI(title="Quant Portfolio API", version="9.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -144,7 +137,7 @@ class RebalanceRequest(BaseModel):
 def fetch_historical_data(tickers_tuple: tuple, period: str = "5y"):
     return yf.download(list(tickers_tuple), period=period)['Close']
 
-# ================= 1. OPTIMIZADOR DE CARTERA =================
+# ================= 1. OPTIMIZADOR DUAL (ESTÁNDAR + CORE-SATELLITE) =================
 @app.post("/api/v1/portfolio/optimize")
 def optimize_portfolio(request: RebalanceRequest):
     mapped_portfolio = {}
@@ -202,82 +195,119 @@ def optimize_portfolio(request: RebalanceRequest):
         current_sharpe = (current_ret - 0.02) / current_vol if current_vol > 0 else 0
 
         max_weight = 0.30 if len(valid_tickers) >= 4 else 1.0
+        
+        # --- A. OPTIMIZACIÓN ESTÁNDAR (Puro Markowitz) ---
         ef = EfficientFrontier(mu_bl, S, weight_bounds=(0.0, max_weight))
         ef.max_sharpe() 
         expected_return, volatility, sharpe_ratio = ef.portfolio_performance()
         target_weights = ef.clean_weights(cutoff=0.01)
-        
-        rebalance_orders = []
-        for ticker in valid_tickers:
-            actual_w = normalized_current.get(ticker, 0)
-            target_w = target_weights.get(ticker, 0)
-            delta = target_w - actual_w
-            
-            if abs(delta) > 0.01:
-                rebalance_orders.append({
-                    "asset": ticker,
-                    "action": "COMPRAR" if delta > 0 else "VENDER",
-                    "delta_pct": round(abs(delta) * 100, 2),
-                    "target_pct": round(target_w * 100, 2)
-                })
 
-        # ================= INYECCIÓN FUNDAMENTAL EXPANDIDA (6 MÉTRICAS) =================
-        fundamental_metrics = None
+        # --- B. OPTIMIZACIÓN CORE-SATELLITE (Alta Convicción) ---
+        z_scores = {}
+        market_data = {}
         if os.path.exists("market_data.json"):
             with open("market_data.json", "r") as f:
                 market_data = json.load(f)
+
+        for t in valid_tickers:
+            data = market_data.get(t, {})
+            roe = safe_float(data.get("roe"))
+            gross_margin = safe_float(data.get("gross_margin"))
+            revenue_growth = safe_float(data.get("revenue_growth_yoy"))
+            f_pe = data.get("forward_pe") or data.get("pe_ratio")
+            forward_pe = safe_float(f_pe, 50.0)
+            peg_ratio = safe_float(data.get("peg_ratio"), 5.0)
+            
+            ai_score = views_dict[t] - mu[t] # Recuperamos el sentiment inyectado
+            
+            quality_score = (min(max(roe, -1), 1) + gross_margin) / 2
+            value_score = (1/forward_pe if forward_pe > 0 else 0) + (0.2 if peg_ratio < 1 else 0)
+            z_scores[t] = (quality_score * 0.3) + (revenue_growth * 0.3) + (value_score * 0.2) + (ai_score * 0.2)
+
+        # Seleccionamos el Top 30% como "Core" (Mínimo 1 activo, Máximo 5)
+        n_core = max(1, min(int(len(valid_tickers) * 0.30), 5))
+        core_assets = sorted(z_scores.keys(), key=lambda k: z_scores[k], reverse=True)[:n_core]
+        
+        cs_bounds = []
+        min_core_weight = 0.10 # Obligamos a que el Core tenga al menos 10% cada uno
+        if n_core * min_core_weight > 0.60: min_core_weight = 0.60 / n_core # Límite de seguridad
+        
+        for t in valid_tickers:
+            if t in core_assets:
+                cs_bounds.append((min_core_weight, 0.40)) # El Core puede llegar hasta 40% individual
+            else:
+                cs_bounds.append((0.0, 0.20)) # Los Satélites máximo 20%
                 
-            def calc_weighted_metrics(weights_dict):
-                pe, yield_pct, roe = 0.0, 0.0, 0.0
-                beta, peg, rev_growth = 0.0, 0.0, 0.0
-                valid_pe_weight, valid_peg_weight = 0.0, 0.0
-                
-                for t, w in weights_dict.items():
-                    data = market_data.get(t, {})
-                    
-                    t_pe = safe_float(data.get("forward_pe") or data.get("pe_ratio"))
-                    t_yield = safe_float(data.get("dividend_yield"))
-                    t_roe = safe_float(data.get("roe"))
-                    t_beta = safe_float(data.get("beta"), 1.0) # Si no hay, asumimos 1.0
-                    t_peg = safe_float(data.get("peg_ratio"))
-                    t_rev = safe_float(data.get("revenue_growth_yoy"))
-                    
-                    if t_pe > 0:
-                        pe += t_pe * w
-                        valid_pe_weight += w
-                    if t_peg > 0:
-                        peg += t_peg * w
-                        valid_peg_weight += w
-                        
-                    yield_pct += t_yield * w
-                    roe += t_roe * w
-                    beta += t_beta * w
-                    rev_growth += t_rev * w
-                    
-                final_pe = (pe / valid_pe_weight) if valid_pe_weight > 0 else 0
-                final_peg = (peg / valid_peg_weight) if valid_peg_weight > 0 else 0
-                
+        ef_cs = EfficientFrontier(mu_bl, S, weight_bounds=tuple(cs_bounds))
+        ef_cs.max_sharpe()
+        cs_expected_return, cs_volatility, cs_sharpe_ratio = ef_cs.portfolio_performance()
+        cs_target_weights = ef_cs.clean_weights(cutoff=0.01)
+
+        # --- CONSTRUCTOR DE ÓRDENES Y MÉTRICAS ---
+        rebalance_orders = []
+        cs_rebalance_orders = []
+        
+        for ticker in valid_tickers:
+            actual_w = normalized_current.get(ticker, 0)
+            # Standard
+            t_w = target_weights.get(ticker, 0)
+            d = t_w - actual_w
+            if abs(d) > 0.01:
+                rebalance_orders.append({"asset": ticker, "action": "COMPRAR" if d > 0 else "VENDER", "delta_pct": round(abs(d)*100, 2), "target_pct": round(t_w*100, 2)})
+            
+            # Core-Satellite
+            cs_t_w = cs_target_weights.get(ticker, 0)
+            cs_d = cs_t_w - actual_w
+            if abs(cs_d) > 0.01:
+                cs_rebalance_orders.append({
+                    "asset": ticker, 
+                    "action": "COMPRAR" if cs_d > 0 else "VENDER", 
+                    "delta_pct": round(abs(cs_d)*100, 2), 
+                    "target_pct": round(cs_t_w*100, 2),
+                    "is_core": ticker in core_assets
+                })
+
+        fundamental_metrics = None
+        if market_data:
+            def calc_metrics(w_dict):
+                pe, yield_p, roe, beta, peg, rev = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+                v_pe, v_peg = 0.0, 0.0
+                for t, w in w_dict.items():
+                    d = market_data.get(t, {})
+                    t_pe = safe_float(d.get("forward_pe") or d.get("pe_ratio"))
+                    t_peg = safe_float(d.get("peg_ratio"))
+                    if t_pe > 0: pe += t_pe * w; v_pe += w
+                    if t_peg > 0: peg += t_peg * w; v_peg += w
+                    yield_p += safe_float(d.get("dividend_yield")) * w
+                    roe += safe_float(d.get("roe")) * w
+                    beta += safe_float(d.get("beta"), 1.0) * w
+                    rev += safe_float(d.get("revenue_growth_yoy")) * w
                 return (
-                    round(final_pe, 2), round(yield_pct * 100, 2), round(roe * 100, 2),
-                    round(beta, 2), round(final_peg, 2), round(rev_growth * 100, 2)
+                    round((pe/v_pe) if v_pe > 0 else 0, 2), round(yield_p*100, 2), round(roe*100, 2),
+                    round(beta, 2), round((peg/v_peg) if v_peg > 0 else 0, 2), round(rev*100, 2)
                 )
 
-            curr_pe, curr_yield, curr_roe, curr_beta, curr_peg, curr_rev = calc_weighted_metrics(normalized_current)
-            opt_pe, opt_yield, opt_roe, opt_beta, opt_peg, opt_rev = calc_weighted_metrics(target_weights)
+            curr_m = calc_metrics(normalized_current)
+            std_m = calc_metrics(target_weights)
+            cs_m = calc_metrics(cs_target_weights)
             
             fundamental_metrics = {
-                "current_pe": curr_pe, "optimal_pe": opt_pe,
-                "current_yield": curr_yield, "optimal_yield": opt_yield,
-                "current_roe": curr_roe, "optimal_roe": opt_roe,
-                "current_beta": curr_beta, "optimal_beta": opt_beta,
-                "current_peg": curr_peg, "optimal_peg": opt_peg,
-                "current_rev": curr_rev, "optimal_rev": opt_rev
+                "current_pe": curr_m[0], "optimal_pe": std_m[0], "cs_pe": cs_m[0],
+                "current_yield": curr_m[1], "optimal_yield": std_m[1], "cs_yield": cs_m[1],
+                "current_roe": curr_m[2], "optimal_roe": std_m[2], "cs_roe": cs_m[2],
+                "current_beta": curr_m[3], "optimal_beta": std_m[3], "cs_beta": cs_m[3],
+                "current_peg": curr_m[4], "optimal_peg": std_m[4], "cs_peg": cs_m[4],
+                "current_rev": curr_m[5], "optimal_rev": std_m[5], "cs_rev": cs_m[5]
             }
 
         return {
             "current_weights": {k: round(v * 100, 2) for k, v in normalized_current.items()},
             "optimal_weights": {k: round(v * 100, 2) for k, v in target_weights.items()},
+            "cs_optimal_weights": {k: round(v * 100, 2) for k, v in cs_target_weights.items()},
+            
             "rebalance_orders": sorted(rebalance_orders, key=lambda x: x['action'], reverse=True),
+            "cs_rebalance_orders": sorted(cs_rebalance_orders, key=lambda x: x['action'], reverse=True),
+            
             "current_performance_metrics": {
                 "expected_annual_return_pct": round(current_ret * 100, 2),
                 "annual_volatility_pct": round(current_vol * 100, 2),
@@ -288,6 +318,12 @@ def optimize_portfolio(request: RebalanceRequest):
                 "annual_volatility_pct": round(volatility * 100, 2),
                 "sharpe_ratio": round(sharpe_ratio, 2)
             },
+            "cs_performance_metrics": {
+                "expected_annual_return_pct": round(cs_expected_return * 100, 2),
+                "annual_volatility_pct": round(cs_volatility * 100, 2),
+                "sharpe_ratio": round(cs_sharpe_ratio, 2),
+                "core_assets": core_assets
+            },
             "fundamental_metrics": fundamental_metrics
         }
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
@@ -297,37 +333,26 @@ def optimize_portfolio(request: RebalanceRequest):
 def market_screener():
     if not os.path.exists("market_data.json"):
         return {"top_picks": [], "error": "Data Lake no encontrado. Ejecuta actualizador.py primero."}
-        
     with open("market_data.json", "r") as f:
         market_data = json.load(f)
-        
     results = []
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
     for ticker, data in market_data.items():
         cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (ticker,))
         row = cursor.fetchone()
         ai_score = safe_float(row[0] if row[0] is not None else 0)
-        
         roe = safe_float(data.get("roe"))
         revenue_growth = safe_float(data.get("revenue_growth_yoy"))
-        
-        if ai_score > 0.15 and (roe > 0.15 or revenue_growth > 0.15):
-            rec = "COMPRA FUERTE"
-        elif roe > 0.10 or revenue_growth > 0.10 or ai_score > 0.1:
-            rec = "COMPRAR"
-        else:
-            rec = "MANTENER"
-            
+        if ai_score > 0.15 and (roe > 0.15 or revenue_growth > 0.15): rec = "COMPRA FUERTE"
+        elif roe > 0.10 or revenue_growth > 0.10 or ai_score > 0.1: rec = "COMPRAR"
+        else: rec = "MANTENER"
         data["ticker"] = ticker
         data["name"] = data.get("name", ticker)
         data["ai_score"] = round(ai_score, 2)
         data["recommendation"] = rec
         results.append(data)
-
     conn.close()
-    
     results = sorted(results, key=lambda x: (safe_float(x.get('ai_score')) + safe_float(x.get('roe'))), reverse=True)
     return {"top_picks": results[:24]}
 
@@ -335,50 +360,35 @@ def market_screener():
 @app.get("/api/v1/model_portfolio")
 def get_model_portfolio():
     try:
-        if not os.path.exists("market_data.json"):
-            raise HTTPException(status_code=404, detail="Data Lake no encontrado.")
-            
-        with open("market_data.json", "r") as f:
-            market_data = json.load(f)
-            
+        if not os.path.exists("market_data.json"): raise HTTPException(status_code=404, detail="Data Lake no encontrado.")
+        with open("market_data.json", "r") as f: market_data = json.load(f)
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        
-        sectors_dict = {}
-        rationale_dict = {}
-        name_dict = {}
-        
+        sectors_dict, rationale_dict, name_dict = {}, {}, {}
         for ticker, data in market_data.items():
             cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (ticker,))
             row = cursor.fetchone()
             ai_score = safe_float(row[0] if row[0] is not None else 0)
-            
             sector = data.get("sector", "Desconocido")
-            name = data.get("name", ticker)
-            name_dict[ticker] = name
-            
+            name_dict[ticker] = data.get("name", ticker)
             if sector == "Desconocido": continue
-                
+            
             roe = safe_float(data.get("roe"))
             gross_margin = safe_float(data.get("gross_margin"))
             debt_to_equity = safe_float(data.get("debt_to_equity"))
             revenue_growth = safe_float(data.get("revenue_growth_yoy"))
             earnings_growth = safe_float(data.get("earnings_growth_yoy"))
-            
-            f_pe = data.get("forward_pe")
-            if f_pe is None: f_pe = data.get("pe_ratio")
+            f_pe = data.get("forward_pe") or data.get("pe_ratio")
             forward_pe = safe_float(f_pe, 50.0)
             peg_ratio = safe_float(data.get("peg_ratio"), 5.0)
             
             capped_roe = min(roe, 1.0)
             quality_score = (capped_roe + gross_margin) / 2
             if debt_to_equity > 200: quality_score -= 0.2
-                 
             growth_score = (revenue_growth + earnings_growth) / 2
             earnings_yield = (1 / forward_pe) if forward_pe > 0 else 0
             peg_score = 0.2 if peg_ratio < 1 else (-0.2 if peg_ratio > 3 else 0)
             value_score = earnings_yield + peg_score
-            
             composite_score = (quality_score * 0.25) + (growth_score * 0.25) + (value_score * 0.25) + (ai_score * 0.25)
             
             reasons = []
@@ -387,36 +397,27 @@ def get_model_portfolio():
             if ai_score > 0.15: reasons.append("Momentum IA Positivo")
             if revenue_growth > 0.15: reasons.append("Alto Crecimiento")
             if not reasons: reasons.append("Z-Score Multi-Factor Sólido")
-            
             rationale_dict[ticker] = " + ".join(reasons)
             
-            if sector not in sectors_dict:
-                sectors_dict[sector] = []
+            if sector not in sectors_dict: sectors_dict[sector] = []
             sectors_dict[sector].append((ticker, composite_score))
-            
         conn.close()
         
         valid_stocks = []
         for sector, stocks in sectors_dict.items():
             stocks.sort(key=lambda x: x[1], reverse=True)
             valid_stocks.extend(stocks[:2])
-            
         valid_stocks.sort(key=lambda x: x[1], reverse=True)
         top_tickers = [x[0] for x in valid_stocks[:12]]
-        
-        if len(top_tickers) < 5:
-            top_tickers = ["AAPL", "MSFT", "NVDA", "V", "JNJ", "WMT", "JPM", "PG"]
+        if len(top_tickers) < 5: top_tickers = ["AAPL", "MSFT", "NVDA", "V", "JNJ", "WMT", "JPM", "PG"]
             
         tickers_tuple = tuple(sorted(top_tickers + ["SPY"]))
         df_all = fetch_historical_data(tickers_tuple, period="5y")
-        
         df_all.dropna(axis=1, how='all', inplace=True)
         df_all.ffill(inplace=True)
         df_all.dropna(inplace=True)
-        
         valid_t = [t for t in top_tickers if t in df_all.columns]
         df_universe = df_all[valid_t]
-        
         mu = mean_historical_return(df_universe)
         S = CovarianceShrinkage(df_universe).ledoit_wolf()
         
@@ -432,7 +433,6 @@ def get_model_portfolio():
 
         bl = BlackLittermanModel(S, pi=mu, absolute_views=views_dict)
         mu_bl = bl.bl_returns()
-        
         ef = EfficientFrontier(mu_bl, S, weight_bounds=(0.05, 0.25))
         ef.max_sharpe()
         ret, vol, sharpe = ef.portfolio_performance()
@@ -444,24 +444,8 @@ def get_model_portfolio():
         spy_sharpe = (spy_ret - 0.02) / spy_vol if spy_vol > 0 else 0
         
         return {
-            "assets": [
-                {
-                    "ticker": k, 
-                    "name": name_dict.get(k, k),
-                    "weight": round(v * 100, 2),
-                    "rationale": rationale_dict.get(k, "Selección Institucional")
-                } for k, v in weights.items() if v > 0
-            ],
-            "metrics": {
-                "return_pct": round(ret * 100, 2),
-                "volatility_pct": round(vol * 100, 2),
-                "sharpe": round(sharpe, 2)
-            },
-            "benchmark": {
-                "return_pct": round(spy_ret * 100, 2),
-                "volatility_pct": round(spy_vol * 100, 2),
-                "sharpe": round(spy_sharpe, 2)
-            }
+            "assets": [{"ticker": k, "name": name_dict.get(k, k), "weight": round(v * 100, 2), "rationale": rationale_dict.get(k, "Selección Institucional")} for k, v in weights.items() if v > 0],
+            "metrics": {"return_pct": round(ret * 100, 2), "volatility_pct": round(vol * 100, 2), "sharpe": round(sharpe, 2)},
+            "benchmark": {"return_pct": round(spy_ret * 100, 2), "volatility_pct": round(spy_vol * 100, 2), "sharpe": round(spy_sharpe, 2)}
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
