@@ -22,15 +22,20 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 
+# NUEVO: Supabase
+from supabase import create_client, Client
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+
 DB_NAME = "quant_database.db"
 HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 
-TICKER_MAP = {
-    "BRKB": "BRK-B",
-    "BRK.B": "BRK-B",
-    "BFB": "BF-B",
-    "BF.B": "BF-B"
-}
+TICKER_MAP = {"BRKB": "BRK-B", "BRK.B": "BRK-B", "BFB": "BF-B", "BF.B": "BF-B"}
 
 def safe_float(val, default=0.0):
     try:
@@ -44,10 +49,7 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sentiment_history (
-            date TEXT,
-            ticker TEXT,
-            sentiment_score REAL,
-            articles_analyzed INTEGER,
+            date TEXT, ticker TEXT, sentiment_score REAL, articles_analyzed INTEGER,
             PRIMARY KEY (date, ticker)
         )
     ''')
@@ -55,17 +57,15 @@ def init_db():
     conn.close()
 
 def get_sentiment_from_api(titles):
-    if not titles: return 0
-    if not HF_API_TOKEN: return 0
+    if not titles or not HF_API_TOKEN: return 0
     API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
     headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-    for attempt in range(3):
+    for _ in range(3):
         try:
             response = requests.post(API_URL, headers=headers, json={"inputs": titles})
             results = response.json()
             if isinstance(results, dict) and 'error' in results:
-                wait_time = results.get('estimated_time', 15)
-                time.sleep(wait_time + 2)
+                time.sleep(results.get('estimated_time', 15) + 2)
                 continue
             score_total = 0
             if isinstance(results, list):
@@ -87,12 +87,11 @@ def get_universe_from_file():
 
 def daily_sentiment_job():
     tickers = get_universe_from_file()
-    total = len(tickers)
     today = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     headers = {'User-Agent': 'Mozilla/5.0'}
-    for i, ticker in enumerate(tickers, 1):
+    for ticker in tickers:
         try:
             time.sleep(2)
             url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
@@ -120,7 +119,7 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.shutdown()
 
-app = FastAPI(title="Quant Portfolio API", version="9.1.0", lifespan=lifespan)
+app = FastAPI(title="Quant Portfolio API", version="10.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -132,13 +131,13 @@ app.add_middleware(
 
 class RebalanceRequest(BaseModel):
     current_portfolio: Dict[str, float]
-    core_min_weight: Optional[float] = None # NUEVO: Parámetro Opcional
+    core_min_weight: Optional[float] = None
 
 @functools.lru_cache(maxsize=128)
 def fetch_historical_data(tickers_tuple: tuple, period: str = "5y"):
     return yf.download(list(tickers_tuple), period=period)['Close']
 
-# ================= 1. OPTIMIZADOR DUAL (ESTÁNDAR + CORE-SATELLITE) =================
+# ================= 1. OPTIMIZADOR DUAL =================
 @app.post("/api/v1/portfolio/optimize")
 def optimize_portfolio(request: RebalanceRequest):
     mapped_portfolio = {}
@@ -154,7 +153,6 @@ def optimize_portfolio(request: RebalanceRequest):
     try:
         tickers_tuple = tuple(sorted(user_tickers + ["SPY"]))
         df_all = fetch_historical_data(tickers_tuple).copy()
-        
         df_all.dropna(axis=1, how='all', inplace=True) 
         df_all.ffill(inplace=True)
         df_all.dropna(inplace=True) 
@@ -197,13 +195,11 @@ def optimize_portfolio(request: RebalanceRequest):
 
         max_weight = 0.30 if len(valid_tickers) >= 4 else 1.0
         
-        # --- A. OPTIMIZACIÓN ESTÁNDAR (Puro Markowitz) ---
         ef = EfficientFrontier(mu_bl, S, weight_bounds=(0.0, max_weight))
         ef.max_sharpe() 
         expected_return, volatility, sharpe_ratio = ef.portfolio_performance()
         target_weights = ef.clean_weights(cutoff=0.01)
 
-        # --- B. OPTIMIZACIÓN CORE-SATELLITE (Alta Convicción) ---
         z_scores = {}
         market_data = {}
         if os.path.exists("market_data.json"):
@@ -227,15 +223,12 @@ def optimize_portfolio(request: RebalanceRequest):
         n_core = max(1, min(int(len(valid_tickers) * 0.30), 5))
         core_assets = sorted(z_scores.keys(), key=lambda k: z_scores[k], reverse=True)[:n_core]
         
-        # LÓGICA DE CONTROL MANUAL PARA EL PESO "CORE"
         cs_bounds = []
         if request.core_min_weight is not None and request.core_min_weight > 0:
             requested_min = request.core_min_weight / 100.0
-            # Seguro matemático: Evita que el usuario pida más del 85% sumando los cores (rompería el solver)
             max_safe = 0.85 / n_core if n_core > 0 else 0.85
             min_core_weight = min(requested_min, max_safe)
         else:
-            # Lógica Automática Original
             min_core_weight = 0.10
             if n_core * min_core_weight > 0.60: min_core_weight = 0.60 / n_core
             
@@ -250,7 +243,6 @@ def optimize_portfolio(request: RebalanceRequest):
         cs_expected_return, cs_volatility, cs_sharpe_ratio = ef_cs.portfolio_performance()
         cs_target_weights = ef_cs.clean_weights(cutoff=0.01)
 
-        # --- CONSTRUCTOR DE ÓRDENES Y MÉTRICAS ---
         rebalance_orders = []
         cs_rebalance_orders = []
         
@@ -265,11 +257,8 @@ def optimize_portfolio(request: RebalanceRequest):
             cs_d = cs_t_w - actual_w
             if abs(cs_d) > 0.01:
                 cs_rebalance_orders.append({
-                    "asset": ticker, 
-                    "action": "COMPRAR" if cs_d > 0 else "VENDER", 
-                    "delta_pct": round(abs(cs_d)*100, 2), 
-                    "target_pct": round(cs_t_w*100, 2),
-                    "is_core": ticker in core_assets
+                    "asset": ticker, "action": "COMPRAR" if cs_d > 0 else "VENDER", 
+                    "delta_pct": round(abs(cs_d)*100, 2), "target_pct": round(cs_t_w*100, 2), "is_core": ticker in core_assets
                 })
 
         fundamental_metrics = None
@@ -315,15 +304,14 @@ def optimize_portfolio(request: RebalanceRequest):
             "performance_metrics": {"expected_annual_return_pct": round(expected_return * 100, 2), "annual_volatility_pct": round(volatility * 100, 2), "sharpe_ratio": round(sharpe_ratio, 2)},
             "cs_performance_metrics": {"expected_annual_return_pct": round(cs_expected_return * 100, 2), "annual_volatility_pct": round(cs_volatility * 100, 2), "sharpe_ratio": round(cs_sharpe_ratio, 2), "core_assets": core_assets},
             "fundamental_metrics": fundamental_metrics,
-            "applied_core_min_weight": round(min_core_weight * 100, 2) # Devuelve qué peso aplicó finalmente
+            "applied_core_min_weight": round(min_core_weight * 100, 2)
         }
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
-# ================= 2. SCREENER INSTITUCIONAL =================
 @app.get("/api/v1/screener")
 def market_screener():
     if not os.path.exists("market_data.json"):
-        return {"top_picks": [], "error": "Data Lake no encontrado. Ejecuta actualizador.py primero."}
+        return {"top_picks": [], "error": "Data Lake no encontrado."}
     with open("market_data.json", "r") as f:
         market_data = json.load(f)
     results = []
@@ -347,7 +335,6 @@ def market_screener():
     results = sorted(results, key=lambda x: (safe_float(x.get('ai_score')) + safe_float(x.get('roe'))), reverse=True)
     return {"top_picks": results[:24]}
 
-# ================= 3. CARTERA MODELO =================
 @app.get("/api/v1/model_portfolio")
 def get_model_portfolio():
     try:
@@ -401,4 +388,76 @@ def get_model_portfolio():
         tickers_tuple = tuple(sorted(top_tickers + ["SPY"]))
         df_all = fetch_historical_data(tickers_tuple, period="5y")
         df_all.dropna(axis=1, how='all', inplace=True)
-        df_all
+        df_all.ffill(inplace=True)
+        df_all.dropna(inplace=True)
+        valid_t = [t for t in top_tickers if t in df_all.columns]
+        df_universe = df_all[valid_t]
+        mu = mean_historical_return(df_universe)
+        S = CovarianceShrinkage(df_universe).ledoit_wolf()
+        
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        views_dict = {}
+        for ticker in valid_t:
+            cursor.execute('SELECT AVG(sentiment_score) FROM sentiment_history WHERE ticker = ?', (ticker,))
+            row = cursor.fetchone()
+            score = safe_float(row[0] if row[0] is not None else 0)
+            views_dict[ticker] = mu[ticker] + (score * 0.10)
+        conn.close()
+
+        bl = BlackLittermanModel(S, pi=mu, absolute_views=views_dict)
+        mu_bl = bl.bl_returns()
+        ef = EfficientFrontier(mu_bl, S, weight_bounds=(0.05, 0.25))
+        ef.max_sharpe()
+        ret, vol, sharpe = ef.portfolio_performance()
+        weights = ef.clean_weights(cutoff=0.01)
+        
+        spy_returns = df_all['SPY'].pct_change().dropna()
+        spy_ret = spy_returns.mean() * 252
+        spy_vol = spy_returns.std() * np.sqrt(252)
+        spy_sharpe = (spy_ret - 0.02) / spy_vol if spy_vol > 0 else 0
+        
+        return {
+            "assets": [{"ticker": k, "name": name_dict.get(k, k), "weight": round(v * 100, 2), "rationale": rationale_dict.get(k, "Selección Institucional")} for k, v in weights.items() if v > 0],
+            "metrics": {"return_pct": round(ret * 100, 2), "volatility_pct": round(vol * 100, 2), "sharpe": round(sharpe, 2)},
+            "benchmark": {"return_pct": round(spy_ret * 100, 2), "volatility_pct": round(spy_vol * 100, 2), "sharpe": round(spy_sharpe, 2)}
+        }
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+# ================= 4. CRM ENDPOINTS (SUPABASE) =================
+class AccountCreate(BaseModel):
+    nro_cuenta: str
+    perfil_riesgo: str = "Moderado"
+    aum_total: float = 0.0
+
+class CRMEvent(BaseModel):
+    cuenta_id: str
+    tipo_evento: str
+    descripcion: str
+
+@app.get("/api/v1/crm/accounts")
+def get_crm_accounts():
+    if not supabase: return []
+    res = supabase.table("cuentas").select("*").order("fecha_ultima_interaccion", desc=False).execute()
+    return res.data
+
+@app.post("/api/v1/crm/accounts")
+def create_crm_account(acc: AccountCreate):
+    if not supabase: raise HTTPException(status_code=500, detail="Supabase no configurado")
+    data = {"nro_cuenta": acc.nro_cuenta, "perfil_riesgo": acc.perfil_riesgo, "aum_total": acc.aum_total}
+    res = supabase.table("cuentas").insert(data).execute()
+    return res.data
+
+@app.get("/api/v1/crm/events/{cuenta_id}")
+def get_crm_events(cuenta_id: str):
+    if not supabase: return []
+    res = supabase.table("bitacora_eventos").select("*").eq("cuenta_id", cuenta_id).order("fecha_evento", desc=True).execute()
+    return res.data
+
+@app.post("/api/v1/crm/events")
+def add_crm_event(event: CRMEvent):
+    if not supabase: raise HTTPException(status_code=500, detail="Supabase no configurado")
+    data = {"cuenta_id": event.cuenta_id, "tipo_evento": event.tipo_evento, "descripcion": event.descripcion}
+    res = supabase.table("bitacora_eventos").insert(data).execute()
+    supabase.table("cuentas").update({"fecha_ultima_interaccion": datetime.now().isoformat()}).eq("id", event.cuenta_id).execute()
+    return res.data
