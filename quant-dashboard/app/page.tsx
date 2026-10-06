@@ -5,7 +5,7 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsToolti
 import * as XLSX from 'xlsx';
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'optimizer' | 'screener' | 'model' | 'crm'>('model');
+  const [activeTab, setActiveTab] = useState<'optimizer' | 'screener' | 'model' | 'crm'>('crm');
 
   // ================= ESTADOS OPTIMIZADOR =================
   const [portfolio, setPortfolio] = useState([{ ticker: 'AAPL', weight: '30' }, { ticker: 'MRK', weight: '0.05' }, { ticker: 'BRKB', weight: '4.81' }]);
@@ -256,4 +256,133 @@ export default function Home() {
                   <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
                     <button onClick={()=>setCrmFilter('all')} className={`px-3 py-1 rounded-full text-[10px] font-bold transition-colors border ${crmFilter==='all' ? 'bg-gray-200 text-black border-gray-200' : 'bg-transparent text-gray-500 border-gray-700 hover:text-white'}`}>TODOS</button>
                     <button onClick={()=>setCrmFilter('red')} className={`px-3 py-1 rounded-full text-[10px] font-bold transition-colors border ${crmFilter==='red' ? 'bg-red-500/10 text-red-400 border-red-500/50' : 'bg-transparent text-gray-500 border-gray-700 hover:text-white'}`}>RIESGO</button>
-                    <button onClick={()=>setCrmFilter('prospect')} className={`px-3 py-1 rounded-full
+                    <button onClick={()=>setCrmFilter('prospect')} className={`px-3 py-1 rounded-full text-[10px] font-bold transition-colors border ${crmFilter==='prospect' ? 'bg-white/10 text-white border-white/30' : 'bg-transparent text-gray-500 border-gray-700 hover:text-white'}`}>PROSPECTOS</button>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                  {filteredAccounts.map(acc => {
+                    const status = getAlertStatus(acc);
+                    const isSelected = selectedAccount?.id === acc.id;
+                    return (
+                      <div key={acc.id} onClick={() => { setSelectedAccount(acc); fetchEvents(acc.id); }} 
+                           className={`group p-3 rounded-lg cursor-pointer transition-all duration-200 flex justify-between items-center ${isSelected ? 'bg-gray-800/80 border border-gray-700' : 'bg-transparent border border-transparent hover:bg-gray-800/30'}`}>
+                        <div className="flex items-center gap-3">
+                          <span className={`w-2 h-2 rounded-full ${status.dot}`}></span>
+                          <div>
+                            <div className={`text-sm font-semibold ${isSelected ? 'text-white' : 'text-gray-300 group-hover:text-white'}`}>{acc.nro_cuenta}</div>
+                            <div className="text-[10px] text-gray-500 font-mono mt-0.5">${acc.aum_total.toLocaleString()}</div>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                           <div className={`text-[9px] font-bold tracking-wider ${status.color}`}>{status.badge}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* PANEL DERECHO */}
+              <div className="lg:col-span-8 bg-[#111111] rounded-xl border border-gray-800/60 shadow-sm flex flex-col overflow-hidden">
+                {!selectedAccount ? (
+                  <div className="h-full flex flex-col items-center justify-center text-gray-600">
+                    <svg className="w-16 h-16 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    <p className="text-sm font-medium">Selecciona una cuenta del directorio</p>
+                  </div>
+                ) : (
+                  <div className="h-full flex flex-col animate-fade-in">
+                    <div className="p-6 border-b border-gray-800/60 bg-gradient-to-r from-[#161616] to-[#111111]">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center gap-3 mb-1">
+                            <h2 className="text-2xl font-bold text-white tracking-tight">{selectedAccount.nro_cuenta}</h2>
+                            <span className="bg-gray-800 text-gray-300 text-[10px] px-2 py-0.5 rounded border border-gray-700">{selectedAccount.perfil_riesgo}</span>
+                          </div>
+                          <p className="text-3xl font-mono font-light text-emerald-400 mt-2">${selectedAccount.aum_total.toLocaleString()} <span className="text-sm text-gray-500">USD</span></p>
+                        </div>
+                        <div className="text-right">
+                          <span className={`inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1 rounded-full border ${getAlertStatus(selectedAccount).color}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${getAlertStatus(selectedAccount).dot}`}></span>
+                            {getAlertStatus(selectedAccount).badge}
+                          </span>
+                          <p className="text-[10px] text-gray-500 mt-2">Última act: {new Date(selectedAccount.fecha_ultima_interaccion).toLocaleDateString()}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-0">
+                      <div className="p-6 border-r border-gray-800/60 flex flex-col">
+                        <h3 className="text-xs font-bold tracking-wider text-gray-400 mb-6">ASIGNACIÓN TEÓRICA</h3>
+                        <div className="flex-1 flex flex-col items-center justify-center min-h-[200px] relative">
+                          {selectedAccount.aum_total > 0 ? (
+                            <>
+                              <ResponsiveContainer width="100%" height={220}>
+                                <PieChart>
+                                  <Pie data={[
+                                      { name: 'Renta Variable (Core)', value: selectedAccount.perfil_riesgo === 'Agresivo' ? 60 : 40 },
+                                      { name: 'Renta Variable (Satélites)', value: selectedAccount.perfil_riesgo === 'Agresivo' ? 20 : 15 },
+                                      { name: 'Renta Fija / Bonos', value: selectedAccount.perfil_riesgo === 'Agresivo' ? 15 : 35 },
+                                      { name: 'Liquidez', value: selectedAccount.perfil_riesgo === 'Agresivo' ? 5 : 10 },
+                                    ]} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={2} dataKey="value" stroke="none">
+                                    {PIE_COLORS.map((color, index) => <Cell key={`cell-${index}`} fill={color} />)}
+                                  </Pie>
+                                  <RechartsTooltip contentStyle={{ backgroundColor: '#0a0a0a', borderColor: '#333', fontSize: '12px' }} itemStyle={{ color: '#fff' }} />
+                                </PieChart>
+                              </ResponsiveContainer>
+                              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                <span className="text-xs text-gray-500">AUM</span>
+                                <span className="text-sm font-bold text-white">${(selectedAccount.aum_total / 1000).toFixed(1)}k</span>
+                              </div>
+                            </>
+                          ) : (
+                             <div className="text-center text-gray-600">
+                               <span className="text-3xl block mb-2">🎯</span>
+                               <p className="text-xs">Cuenta sin fondear. Diseña una propuesta.</p>
+                             </div>
+                          )}
+                        </div>
+                        <div className="mt-6 pt-6 border-t border-gray-800/60">
+                           <button onClick={() => setActiveTab('optimizer')} className="w-full bg-[#161616] hover:bg-gray-800 text-emerald-400 text-xs font-bold py-2.5 rounded border border-gray-700 transition-colors flex justify-center items-center gap-2">
+                             <span>⚙️</span> Iniciar Rebalanceo Cuantitativo
+                           </button>
+                        </div>
+                      </div>
+
+                      <div className="p-6 flex flex-col bg-[#0f0f0f]">
+                        <h3 className="text-xs font-bold tracking-wider text-gray-400 mb-4">ACTIVITY FEED</h3>
+                        <div className="flex gap-2 mb-6">
+                          <select value={newEventType} onChange={e=>setNewEventType(e.target.value)} className="bg-[#1a1a1a] border border-gray-700 text-xs rounded px-2 text-gray-300 outline-none focus:border-gray-500">
+                            <option>Llamada</option><option>WhatsApp</option><option>Licitación</option><option>Rebalanceo</option>
+                          </select>
+                          <input type="text" value={newEventDesc} onChange={e=>setNewEventDesc(e.target.value)} placeholder="Registro de interacción..." className="flex-1 bg-[#1a1a1a] border border-gray-700 text-xs rounded px-3 py-2 text-white outline-none focus:border-gray-500 transition-colors"/>
+                          <button onClick={createEvent} className="bg-gray-800 hover:bg-gray-700 text-white px-3 py-1 rounded text-xs font-bold transition-colors">↳</button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto pr-2 space-y-4">
+                          {crmEvents.length === 0 ? (
+                            <p className="text-center text-xs text-gray-600 mt-10">Sin interacciones registradas.</p>
+                          ) : (
+                            crmEvents.map((ev, i) => (
+                              <div key={ev.id} className="relative pl-4 border-l border-gray-800/80">
+                                <span className="absolute left-[-4px] top-1.5 w-2 h-2 rounded-full bg-gray-600 border-2 border-[#0f0f0f]"></span>
+                                <div className="text-[10px] text-gray-500 mb-0.5 flex justify-between">
+                                  <span className="font-semibold text-gray-400 uppercase tracking-wider">{ev.tipo_evento}</span>
+                                  <span>{new Date(ev.fecha_evento).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' })}</span>
+                                </div>
+                                <p className="text-sm text-gray-300 leading-relaxed">{ev.descripcion}</p>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </main>
+  );
+}
