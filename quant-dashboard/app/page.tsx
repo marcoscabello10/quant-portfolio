@@ -39,9 +39,6 @@ export default function Home() {
   // ================= UTILIDADES =================
   const parseWeight = (val: string) => { const parsed = parseFloat(String(val).replace(',', '.')); return isNaN(parsed) ? 0 : parsed; };
   const totalWeight = portfolio.reduce((acc, item) => acc + parseWeight(item.weight), 0);
-  const formatPct = (val: any) => { if (val == null) return 'N/A'; const num = parseFloat(val); return (num > 1 || num < -1) ? `${num.toFixed(1)}%` : `${(num * 100).toFixed(1)}%`; };
-  const formatNum = (val: any) => val != null ? parseFloat(val).toFixed(2) : 'N/A';
-  const formatBil = (val: any) => val != null ? `$${(parseFloat(val) / 1e9).toFixed(1)}B` : 'N/A';
 
   // ================= LECTOR EXCEL =================
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -125,7 +122,6 @@ export default function Home() {
     setModelLoading(false);
   };
 
-  // LÓGICA CRM
   const fetchCrmAccounts = async () => {
     try {
       const res = await fetch('https://quant-api-3778.onrender.com/api/v1/crm/accounts');
@@ -174,7 +170,6 @@ export default function Home() {
     if (activeTab === 'crm') fetchCrmAccounts();
   }, [activeTab]);
 
-  // SEMÁFORO CRM Y KPIs GLOBALES
   const getAlertStatus = (acc: any) => {
     if (acc.aum_total == 0) return { color: 'text-gray-300 border-gray-600', dot: 'bg-gray-400', badge: 'PROSPECTO', filterKey: 'prospect' };
     const days = (new Date().getTime() - new Date(acc.fecha_ultima_interaccion).getTime()) / (1000 * 3600 * 24);
@@ -191,14 +186,6 @@ export default function Home() {
   const totalGlobalAUM = crmAccounts.reduce((sum, acc) => sum + (acc.aum_total || 0), 0);
   const totalAtRisk = crmAccounts.filter(a => getAlertStatus(a).filterKey === 'red').length;
 
-  // GRÁFICOS (Render logic from previous steps)
-  // ... (Projection, Backtest, Comparison logic here - omitted for brevity, keeping existing logic)
-  const generateComparisonData = () => {
-    if (!optResults) return [];
-    const allTickers = Array.from(new Set([...Object.keys(optResults.current_weights || {}), ...Object.keys(optResults.cs_optimal_weights || {})]));
-    return allTickers.map(ticker => ({ ticker, "Actual %": optResults.current_weights[ticker] || 0, "Core-Satellite %": optResults.cs_optimal_weights[ticker] || 0 })).sort((a, b) => b["Core-Satellite %"] - a["Core-Satellite %"]);
-  };
-  const comparisonData = generateComparisonData();
   const PIE_COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B'];
 
   return (
@@ -228,11 +215,10 @@ export default function Home() {
           </div>
         </div>
 
-        {/* ================= VISTA CRM WEALTH (KOYFIN / GHOSTFOLIO STYLE) ================= */}
+        {/* ================= VISTA CRM WEALTH ================= */}
         {activeTab === 'crm' && (
           <div className="space-y-6 animate-fade-in">
-            
-            {/* MACRO KPIs (Global Dashboard) */}
+            {/* MACRO KPIs */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div className="bg-[#111111] p-5 rounded-xl border border-gray-800/60 shadow-sm flex flex-col justify-center">
                 <span className="text-xs text-gray-500 font-semibold tracking-wider mb-1">TOTAL AUM</span>
@@ -253,7 +239,21 @@ export default function Home() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[600px]">
-              
-              {/* PANEL IZQUIERDO: DIRECTORIO MINIMALISTA */}
+              {/* PANEL IZQUIERDO */}
               <div className="lg:col-span-4 bg-[#111111] rounded-xl border border-gray-800/60 shadow-sm flex flex-col overflow-hidden">
-                <div className="p-5 border-b border-gray
+                <div className="p-5 border-b border-gray-800/60 bg-[#161616]">
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-sm font-bold text-gray-200 tracking-wide">DIRECTORIO</h2>
+                    <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">{crmAccounts.length}</span>
+                  </div>
+                  
+                  <div className="flex gap-2 mb-4">
+                    <input type="text" value={newAccName} onChange={e=>setNewAccName(e.target.value)} placeholder="Ticker/ID" className="w-1/3 bg-[#0a0a0a] border border-gray-700 focus:border-emerald-500 text-white px-2 py-1.5 text-xs rounded outline-none transition-colors"/>
+                    <input type="number" value={newAccAUM} onChange={e=>setNewAccAUM(e.target.value)} placeholder="USD" className="w-1/3 bg-[#0a0a0a] border border-gray-700 focus:border-emerald-500 text-white px-2 py-1.5 text-xs rounded outline-none transition-colors"/>
+                    <button onClick={createAccount} className="w-1/3 bg-gray-800 hover:bg-gray-700 text-white text-xs font-bold rounded transition-colors">+</button>
+                  </div>
+
+                  <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+                    <button onClick={()=>setCrmFilter('all')} className={`px-3 py-1 rounded-full text-[10px] font-bold transition-colors border ${crmFilter==='all' ? 'bg-gray-200 text-black border-gray-200' : 'bg-transparent text-gray-500 border-gray-700 hover:text-white'}`}>TODOS</button>
+                    <button onClick={()=>setCrmFilter('red')} className={`px-3 py-1 rounded-full text-[10px] font-bold transition-colors border ${crmFilter==='red' ? 'bg-red-500/10 text-red-400 border-red-500/50' : 'bg-transparent text-gray-500 border-gray-700 hover:text-white'}`}>RIESGO</button>
+                    <button onClick={()=>setCrmFilter('prospect')} className={`px-3 py-1 rounded-full
