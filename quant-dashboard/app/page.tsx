@@ -22,15 +22,14 @@ export default function Home() {
   const [modelPortfolio, setModelPortfolio] = useState<any>(null);
   const [modelLoading, setModelLoading] = useState(false);
 
-  // ================= ESTADOS CRM =================
+  // ================= ESTADOS CRM (ACTUALIZADO A NUEVA DB) =================
   const [crmAccounts, setCrmAccounts] = useState<any[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<any>(null);
   const [crmEvents, setCrmEvents] = useState<any[]>([]);
+  const [crmTenencias, setCrmTenencias] = useState<any[]>([]);
   const [crmFilter, setCrmFilter] = useState('all'); 
+  const [searchTerm, setSearchTerm] = useState('');
   
-  const [newAccName, setNewAccName] = useState('');
-  const [newAccAUM, setNewAccAUM] = useState('');
-  const [newAccProfile, setNewAccProfile] = useState('Moderado');
   const [newEventDesc, setNewEventDesc] = useState('');
   const [newEventType, setNewEventType] = useState('Llamada');
 
@@ -41,7 +40,6 @@ export default function Home() {
   const totalWeight = portfolio.reduce((acc, item) => acc + parseWeight(item.weight), 0);
   const formatPct = (val: any) => { if (val == null) return 'N/A'; const num = parseFloat(val); return (num > 1 || num < -1) ? `${num.toFixed(1)}%` : `${(num * 100).toFixed(1)}%`; };
   const formatNum = (val: any) => val != null ? parseFloat(val).toFixed(2) : 'N/A';
-  const formatBil = (val: any) => val != null ? `$${(parseFloat(val) / 1e9).toFixed(1)}B` : 'N/A';
 
   const addAsset = () => setPortfolio([...portfolio, { ticker: '', weight: '' }]);
   const updateAsset = (index: number, field: string, value: any) => {
@@ -49,7 +47,6 @@ export default function Home() {
   };
   const removeAsset = (index: number) => setPortfolio(portfolio.filter((_, i) => i !== index));
 
-  // ================= LECTOR EXCEL =================
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -87,7 +84,7 @@ export default function Home() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // ================= LLAMADAS API =================
+  // ================= LLAMADAS API OPTIMIZADOR & SCREENER =================
   const runOptimizer = async () => {
     setOptLoading(true); setOptError(null); setOptResults(null);
     try {
@@ -133,6 +130,7 @@ export default function Home() {
     setModelLoading(false);
   };
 
+  // ================= LLAMADAS API CRM =================
   const fetchCrmAccounts = async () => {
     try {
       const res = await fetch('https://quant-api-3778.onrender.com/api/v1/crm/accounts');
@@ -141,24 +139,20 @@ export default function Home() {
     } catch(err) {}
   };
 
-  const createAccount = async () => {
-    if (!newAccName) return;
+  const selectAccount = async (acc: any) => {
+    setSelectedAccount(acc);
+    setCrmTenencias([]);
+    setCrmEvents([]);
     try {
-      const aum = parseFloat(newAccAUM) || 0;
-      await fetch('https://quant-api-3778.onrender.com/api/v1/crm/accounts', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nro_cuenta: newAccName, aum_total: aum, perfil_riesgo: newAccProfile })
-      });
-      setNewAccName(''); setNewAccAUM(''); setNewAccProfile('Moderado');
-      fetchCrmAccounts();
-    } catch(err) {}
-  };
-
-  const fetchEvents = async (id: string) => {
-    try {
-      const res = await fetch(`https://quant-api-3778.onrender.com/api/v1/crm/events/${id}`);
-      const data = await res.json();
-      if (res.ok) setCrmEvents(data);
+      // Traer tenencias (Vista Cartera)
+      const resTenencias = await fetch(`https://quant-api-3778.onrender.com/api/v1/crm/tenencias/${acc.comitente}`);
+      const dataTenencias = await resTenencias.json();
+      if (resTenencias.ok) setCrmTenencias(dataTenencias);
+      
+      // Traer Bitácora
+      const resEvents = await fetch(`https://quant-api-3778.onrender.com/api/v1/crm/events/${acc.comitente}`);
+      const dataEvents = await resEvents.json();
+      if (resEvents.ok) setCrmEvents(dataEvents);
     } catch(err) {}
   };
 
@@ -167,11 +161,10 @@ export default function Home() {
     try {
       await fetch('https://quant-api-3778.onrender.com/api/v1/crm/events', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cuenta_id: selectedAccount.id, tipo_evento: newEventType, descripcion: newEventDesc })
+        body: JSON.stringify({ comitente: selectedAccount.comitente, tipo_evento: newEventType, descripcion: newEventDesc })
       });
       setNewEventDesc('');
-      fetchEvents(selectedAccount.id);
-      fetchCrmAccounts();
+      selectAccount(selectedAccount); // Refrescar cuenta seleccionada
     } catch(err) {}
   };
 
@@ -181,37 +174,30 @@ export default function Home() {
     if (activeTab === 'crm') fetchCrmAccounts();
   }, [activeTab]);
 
-  // ================= GRÁFICOS Y DATOS =================
+  // ================= LÓGICA DE FILTRADO Y KPIs CRM =================
   const getAlertStatus = (acc: any) => {
-    if (acc.aum_total == 0) return { color: 'text-gray-300 border-gray-600', dot: 'bg-gray-400', badge: 'PROSPECTO', filterKey: 'prospect' };
-    const days = (new Date().getTime() - new Date(acc.fecha_ultima_interaccion).getTime()) / (1000 * 3600 * 24);
+    const aum = acc.aum || 0;
+    if (acc.estado === 'Sin datos') return { color: 'text-gray-500 border-gray-700', dot: 'bg-gray-600', badge: 'INCOMPLETO', filterKey: 'prospect' };
+    if (aum === 0 && !acc.tiene_cedears) return { color: 'text-gray-300 border-gray-600', dot: 'bg-gray-400', badge: 'PROSPECTO', filterKey: 'prospect' };
+    
+    const lastDate = acc.updated_at ? new Date(acc.updated_at).getTime() : new Date().getTime();
+    const days = (new Date().getTime() - lastDate) / (1000 * 3600 * 24);
+    
     if (days > 30) return { color: 'text-red-400 border-red-900/50', dot: 'bg-red-500', badge: 'RIESGO', filterKey: 'red' };
     if (days > 15) return { color: 'text-yellow-400 border-yellow-900/50', dot: 'bg-yellow-500', badge: 'ATENCIÓN', filterKey: 'yellow' };
-    return { color: 'text-emerald-400 border-emerald-900/50', dot: 'bg-emerald-500', badge: 'SALUDABLE', filterKey: 'green' };
+    return { color: 'text-emerald-400 border-emerald-900/50', dot: 'bg-emerald-500', badge: 'AL DÍA', filterKey: 'green' };
   };
 
   const filteredAccounts = crmAccounts.filter(acc => {
-    if (crmFilter === 'all') return true;
-    return getAlertStatus(acc).filterKey === crmFilter;
+    const matchesSearch = acc.nombre.toLowerCase().includes(searchTerm.toLowerCase()) || String(acc.comitente).includes(searchTerm);
+    if (crmFilter === 'all') return matchesSearch;
+    return matchesSearch && getAlertStatus(acc).filterKey === crmFilter;
   });
 
-  const totalGlobalAUM = crmAccounts.reduce((sum, acc) => sum + (acc.aum_total || 0), 0);
+  const totalGlobalAUM = crmAccounts.reduce((sum, acc) => sum + (acc.aum || 0), 0);
   const totalAtRisk = crmAccounts.filter(a => getAlertStatus(a).filterKey === 'red').length;
 
-  const generateProjectionData = () => {
-    if (!optResults || !optResults.current_performance_metrics) return [];
-    const data = [];
-    let currentVal = 10000; let optVal = 10000; let csVal = 10000;
-    const r_curr = optResults.current_performance_metrics.expected_annual_return_pct / 100;
-    const r_opt = optResults.performance_metrics.expected_annual_return_pct / 100;
-    const r_cs = optResults.cs_performance_metrics.expected_annual_return_pct / 100;
-    for(let i = 0; i <= 10; i++) {
-      data.push({ year: `Año ${i}`, "Tu Cartera": Math.round(currentVal), "Markowitz Estándar": Math.round(optVal), "Core-Satellite (Recomendada)": Math.round(csVal) });
-      currentVal *= (1 + r_curr); optVal *= (1 + r_opt); csVal *= (1 + r_cs);
-    }
-    return data;
-  };
-
+  // ================= GRÁFICOS OPTIMIZADOR Y MODELO =================
   const generateBacktestData = () => {
     if (!modelPortfolio || !modelPortfolio.metrics) return [];
     const data = [];
@@ -232,8 +218,6 @@ export default function Home() {
     })).sort((a, b) => b["Core-Satellite %"] - a["Core-Satellite %"]);
   };
 
-  const PIE_COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B'];
-  const projectionData = generateProjectionData();
   const backtestData = generateBacktestData();
   const comparisonData = generateComparisonData();
 
@@ -544,7 +528,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* ================= VISTA CRM WEALTH ================= */}
+        {/* ================= VISTA CRM WEALTH (NUEVO DISEÑO CON TENENCIAS REALES) ================= */}
         {activeTab === 'crm' && (
           <div className="space-y-6 animate-fade-in">
             {/* MACRO KPIs */}
@@ -555,11 +539,11 @@ export default function Home() {
               </div>
               <div className="bg-[#111111] p-5 rounded-xl border border-gray-800/60 shadow-sm flex flex-col justify-center">
                 <span className="text-xs text-gray-500 font-semibold tracking-wider mb-1">CUENTAS ACTIVAS</span>
-                <span className="text-2xl font-bold text-white">{crmAccounts.filter(a => a.aum_total > 0).length}</span>
+                <span className="text-2xl font-bold text-white">{crmAccounts.filter(a => (a.aum || 0) >= 100).length}</span>
               </div>
               <div className="bg-[#111111] p-5 rounded-xl border border-gray-800/60 shadow-sm flex flex-col justify-center">
-                <span className="text-xs text-gray-500 font-semibold tracking-wider mb-1">PROSPECTOS</span>
-                <span className="text-2xl font-bold text-gray-300">{crmAccounts.filter(a => a.aum_total === 0).length}</span>
+                <span className="text-xs text-gray-500 font-semibold tracking-wider mb-1">PROSPECTOS (AUM 0)</span>
+                <span className="text-2xl font-bold text-gray-300">{crmAccounts.filter(a => (a.aum || 0) === 0 && !a.tiene_cedears).length}</span>
               </div>
               <div className="bg-[#111111] p-5 rounded-xl border border-gray-800/60 shadow-sm flex flex-col justify-center">
                 <span className="text-xs text-gray-500 font-semibold tracking-wider mb-1">CUENTAS EN RIESGO</span>
@@ -568,20 +552,28 @@ export default function Home() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[600px]">
-              {/* PANEL IZQUIERDO */}
+              
+              {/* PANEL IZQUIERDO: DIRECTORIO (CON BUSCADOR) */}
               <div className="lg:col-span-4 bg-[#111111] rounded-xl border border-gray-800/60 shadow-sm flex flex-col overflow-hidden">
                 <div className="p-5 border-b border-gray-800/60 bg-[#161616]">
                   <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-sm font-bold text-gray-200 tracking-wide">DIRECTORIO</h2>
-                    <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">{crmAccounts.length}</span>
+                    <h2 className="text-sm font-bold text-gray-200 tracking-wide">DIRECTORIO DE CLIENTES</h2>
+                    <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">{filteredAccounts.length}</span>
                   </div>
                   
-                  <div className="flex gap-2 mb-4">
-                    <input type="text" value={newAccName} onChange={e=>setNewAccName(e.target.value)} placeholder="Ticker/ID" className="w-1/3 bg-[#0a0a0a] border border-gray-700 focus:border-emerald-500 text-white px-2 py-1.5 text-xs rounded outline-none transition-colors"/>
-                    <input type="number" value={newAccAUM} onChange={e=>setNewAccAUM(e.target.value)} placeholder="USD" className="w-1/3 bg-[#0a0a0a] border border-gray-700 focus:border-emerald-500 text-white px-2 py-1.5 text-xs rounded outline-none transition-colors"/>
-                    <button onClick={createAccount} className="w-1/3 bg-gray-800 hover:bg-gray-700 text-white text-xs font-bold rounded transition-colors">+</button>
+                  {/* Buscador minimalista */}
+                  <div className="mb-4 relative">
+                    <span className="absolute left-3 top-2 text-gray-500 text-xs">🔍</span>
+                    <input 
+                      type="text" 
+                      value={searchTerm} 
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      placeholder="Buscar por nombre o comitente..." 
+                      className="w-full bg-[#0a0a0a] border border-gray-700 focus:border-emerald-500 text-white pl-8 pr-3 py-1.5 text-xs rounded outline-none transition-colors"
+                    />
                   </div>
 
+                  {/* Filtros Píldoras */}
                   <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
                     <button onClick={()=>setCrmFilter('all')} className={`px-3 py-1 rounded-full text-[10px] font-bold transition-colors border ${crmFilter==='all' ? 'bg-gray-200 text-black border-gray-200' : 'bg-transparent text-gray-500 border-gray-700 hover:text-white'}`}>TODOS</button>
                     <button onClick={()=>setCrmFilter('red')} className={`px-3 py-1 rounded-full text-[10px] font-bold transition-colors border ${crmFilter==='red' ? 'bg-red-500/10 text-red-400 border-red-500/50' : 'bg-transparent text-gray-500 border-gray-700 hover:text-white'}`}>RIESGO</button>
@@ -590,106 +582,145 @@ export default function Home() {
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                  {filteredAccounts.map(acc => {
-                    const status = getAlertStatus(acc);
-                    const isSelected = selectedAccount?.id === acc.id;
-                    return (
-                      <div key={acc.id} onClick={() => { setSelectedAccount(acc); fetchEvents(acc.id); }} 
-                           className={`group p-3 rounded-lg cursor-pointer transition-all duration-200 flex justify-between items-center ${isSelected ? 'bg-gray-800/80 border border-gray-700' : 'bg-transparent border border-transparent hover:bg-gray-800/30'}`}>
-                        <div className="flex items-center gap-3">
-                          <span className={`w-2 h-2 rounded-full ${status.dot}`}></span>
-                          <div>
-                            <div className={`text-sm font-semibold ${isSelected ? 'text-white' : 'text-gray-300 group-hover:text-white'}`}>{acc.nro_cuenta}</div>
-                            <div className="text-[10px] text-gray-500 font-mono mt-0.5">${acc.aum_total.toLocaleString()}</div>
+                  {filteredAccounts.length === 0 ? (
+                    <div className="text-center text-gray-600 py-10 text-xs">No se encontraron clientes.</div>
+                  ) : (
+                    filteredAccounts.map(acc => {
+                      const status = getAlertStatus(acc);
+                      const isSelected = selectedAccount?.comitente === acc.comitente;
+                      return (
+                        <div key={acc.comitente} onClick={() => selectAccount(acc)} 
+                             className={`group p-3 rounded-lg cursor-pointer transition-all duration-200 flex justify-between items-center ${isSelected ? 'bg-gray-800/80 border border-gray-700' : 'bg-transparent border border-transparent hover:bg-gray-800/30'}`}>
+                          <div className="flex items-center gap-3">
+                            <span className={`w-2 h-2 rounded-full ${status.dot}`}></span>
+                            <div>
+                              <div className={`text-sm font-semibold truncate max-w-[150px] ${isSelected ? 'text-white' : 'text-gray-300 group-hover:text-white'}`}>{acc.nombre}</div>
+                              <div className="text-[10px] text-gray-500 font-mono mt-0.5">#{acc.comitente} | ${(acc.aum || 0).toLocaleString()}</div>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                             <div className={`text-[9px] font-bold tracking-wider ${status.color}`}>{status.badge}</div>
                           </div>
                         </div>
-                        <div className="text-right">
-                           <div className={`text-[9px] font-bold tracking-wider ${status.color}`}>{status.badge}</div>
-                        </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })
+                  )}
                 </div>
               </div>
 
-              {/* PANEL DERECHO */}
+              {/* PANEL DERECHO: EXPEDIENTE CLIENTE */}
               <div className="lg:col-span-8 bg-[#111111] rounded-xl border border-gray-800/60 shadow-sm flex flex-col overflow-hidden">
                 {!selectedAccount ? (
                   <div className="h-full flex flex-col items-center justify-center text-gray-600">
                     <svg className="w-16 h-16 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                    <p className="text-sm font-medium">Selecciona una cuenta del directorio</p>
+                    <p className="text-sm font-medium">Selecciona un cliente del directorio</p>
                   </div>
                 ) : (
                   <div className="h-full flex flex-col animate-fade-in">
+                    
+                    {/* CABECERA */}
                     <div className="p-6 border-b border-gray-800/60 bg-gradient-to-r from-[#161616] to-[#111111]">
                       <div className="flex justify-between items-start">
                         <div>
                           <div className="flex items-center gap-3 mb-1">
-                            <h2 className="text-2xl font-bold text-white tracking-tight">{selectedAccount.nro_cuenta}</h2>
-                            <span className="bg-gray-800 text-gray-300 text-[10px] px-2 py-0.5 rounded border border-gray-700">{selectedAccount.perfil_riesgo}</span>
+                            <h2 className="text-2xl font-bold text-white tracking-tight">{selectedAccount.nombre}</h2>
+                            <span className="bg-gray-800 text-gray-300 text-[10px] px-2 py-0.5 rounded border border-gray-700">{selectedAccount.perfil_inversor || 'Sin Definir'}</span>
+                            <span className="bg-blue-900/20 text-blue-400 text-[10px] px-2 py-0.5 rounded border border-blue-900/50">#{selectedAccount.comitente}</span>
                           </div>
-                          <p className="text-3xl font-mono font-light text-emerald-400 mt-2">${selectedAccount.aum_total.toLocaleString()} <span className="text-sm text-gray-500">USD</span></p>
+                          <p className="text-3xl font-mono font-light text-emerald-400 mt-2">${(selectedAccount.aum || 0).toLocaleString()} <span className="text-sm text-gray-500">USD</span></p>
+                          
+                          <div className="mt-3 flex gap-4 text-xs text-gray-400">
+                            {selectedAccount.mail && <span className="flex items-center gap-1"><span>✉️</span> {selectedAccount.mail}</span>}
+                            {selectedAccount.telefono && <span className="flex items-center gap-1"><span>📞</span> {selectedAccount.telefono}</span>}
+                          </div>
                         </div>
+                        
                         <div className="text-right">
                           <span className={`inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1 rounded-full border ${getAlertStatus(selectedAccount).color}`}>
                             <span className={`w-1.5 h-1.5 rounded-full ${getAlertStatus(selectedAccount).dot}`}></span>
                             {getAlertStatus(selectedAccount).badge}
                           </span>
-                          <p className="text-[10px] text-gray-500 mt-2">Última act: {new Date(selectedAccount.fecha_ultima_interaccion).toLocaleDateString()}</p>
+                          <p className="text-[10px] text-gray-500 mt-2">Última act: {selectedAccount.updated_at ? new Date(selectedAccount.updated_at).toLocaleDateString() : 'Sin registro'}</p>
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-0">
-                      <div className="p-6 border-r border-gray-800/60 flex flex-col">
-                        <h3 className="text-xs font-bold tracking-wider text-gray-400 mb-6">ASIGNACIÓN TEÓRICA</h3>
-                        <div className="flex-1 flex flex-col items-center justify-center min-h-[200px] relative">
-                          {selectedAccount.aum_total > 0 ? (
-                            <>
-                              <ResponsiveContainer width="100%" height={220}>
-                                <PieChart>
-                                  <Pie data={[
-                                      { name: 'Renta Variable (Core)', value: selectedAccount.perfil_riesgo === 'Agresivo' ? 60 : 40 },
-                                      { name: 'Renta Variable (Satélites)', value: selectedAccount.perfil_riesgo === 'Agresivo' ? 20 : 15 },
-                                      { name: 'Renta Fija / Bonos', value: selectedAccount.perfil_riesgo === 'Agresivo' ? 15 : 35 },
-                                      { name: 'Liquidez', value: selectedAccount.perfil_riesgo === 'Agresivo' ? 5 : 10 },
-                                    ]} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={2} dataKey="value" stroke="none">
-                                    {PIE_COLORS.map((color, index) => <Cell key={`cell-${index}`} fill={color} />)}
-                                  </Pie>
-                                  <RechartsTooltip contentStyle={{ backgroundColor: '#0a0a0a', borderColor: '#333', fontSize: '12px' }} itemStyle={{ color: '#fff' }} />
-                                </PieChart>
-                              </ResponsiveContainer>
-                              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                                <span className="text-xs text-gray-500">AUM</span>
-                                <span className="text-sm font-bold text-white">${(selectedAccount.aum_total / 1000).toFixed(1)}k</span>
-                              </div>
-                            </>
-                          ) : (
-                             <div className="text-center text-gray-600">
-                               <span className="text-3xl block mb-2">🎯</span>
-                               <p className="text-xs">Cuenta sin fondear. Diseña una propuesta.</p>
-                             </div>
-                          )}
-                        </div>
-                        <div className="mt-6 pt-6 border-t border-gray-800/60">
-                           <button onClick={() => setActiveTab('optimizer')} className="w-full bg-[#161616] hover:bg-gray-800 text-emerald-400 text-xs font-bold py-2.5 rounded border border-gray-700 transition-colors flex justify-center items-center gap-2">
-                             <span>⚙️</span> Iniciar Rebalanceo Cuantitativo
-                           </button>
-                        </div>
+                    <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-0">
+                      
+                      {/* COLUMNA POSICIONES (REEMPLAZA AL GRÁFICO FALSO) */}
+                      <div className="p-6 border-r border-gray-800/60 flex flex-col md:col-span-2 overflow-y-auto">
+                        <h3 className="text-xs font-bold tracking-wider text-gray-400 mb-4">CARTERA ACTUAL (VISTA CONSOLIDADA)</h3>
+                        
+                        {crmTenencias.length === 0 ? (
+                          <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-600 mt-10">
+                            <span className="text-3xl block mb-2">🎯</span>
+                            <p className="text-xs">No hay posiciones de Renta Variable cargadas.</p>
+                          </div>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">
+                              <thead>
+                                <tr className="border-b border-gray-800/60 text-[10px] text-gray-500">
+                                  <th className="py-2 px-2 font-bold tracking-wider">TICKER</th>
+                                  <th className="py-2 px-2 font-bold tracking-wider">NOMINALES</th>
+                                  <th className="py-2 px-2 font-bold tracking-wider">PRECIO PROM.</th>
+                                  <th className="py-2 px-2 font-bold tracking-wider">COSTO TOTAL</th>
+                                  <th className="py-2 px-2 text-right font-bold tracking-wider">PESO %</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {crmTenencias.map((t, idx) => (
+                                  <tr key={idx} className="border-b border-gray-800/30 text-xs hover:bg-gray-800/20 transition-colors">
+                                    <td className="py-2 px-2 font-bold text-gray-300">
+                                      {t.ticker}
+                                      {t.precio_estimado && <span className="ml-1 text-[8px] text-yellow-500 bg-yellow-900/20 px-1 rounded" title="Precio estimado por sistema">E</span>}
+                                    </td>
+                                    <td className="py-2 px-2 font-mono text-gray-400">{t.nominales || 0}</td>
+                                    <td className="py-2 px-2 font-mono text-gray-400">${t.precio_promedio_compra?.toFixed(2) || '0.00'}</td>
+                                    <td className="py-2 px-2 font-mono text-gray-400">${t.costo_total_compra?.toLocaleString() || '0'}</td>
+                                    <td className="py-2 px-2 font-mono text-emerald-400/80 text-right font-semibold">
+                                      {t.porcentaje_tenencia ? (t.porcentaje_tenencia * 100).toFixed(1) : 0}%
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                        
+                        {crmTenencias.length > 0 && (
+                          <div className="mt-6 pt-4 border-t border-gray-800/60 flex justify-end">
+                            <button onClick={() => {
+                              // Pre-cargar el optimizador con la cartera real
+                              const tPort = crmTenencias.map(t => ({ ticker: t.ticker_origen || t.ticker, weight: (t.porcentaje_tenencia * 100).toFixed(2) }));
+                              setPortfolio(tPort.filter(p => p.ticker !== 'OTRO'));
+                              setActiveTab('optimizer');
+                            }} className="bg-[#161616] hover:bg-gray-800 text-emerald-400 text-xs font-bold px-4 py-2 rounded border border-gray-700 transition-colors flex items-center gap-2">
+                              <span>⚙️</span> Cargar en Optimizador Cuantitativo
+                            </button>
+                          </div>
+                        )}
                       </div>
 
-                      <div className="p-6 flex flex-col bg-[#0f0f0f]">
+                      {/* COLUMNA BITÁCORA */}
+                      <div className="p-6 flex flex-col bg-[#0f0f0f] md:col-span-1">
                         <h3 className="text-xs font-bold tracking-wider text-gray-400 mb-4">ACTIVITY FEED</h3>
-                        <div className="flex gap-2 mb-6">
-                          <select value={newEventType} onChange={e=>setNewEventType(e.target.value)} className="bg-[#1a1a1a] border border-gray-700 text-xs rounded px-2 text-gray-300 outline-none focus:border-gray-500">
+                        
+                        {/* Input minimalista para nuevo evento */}
+                        <div className="flex flex-col gap-2 mb-6">
+                          <select value={newEventType} onChange={e=>setNewEventType(e.target.value)} className="bg-[#1a1a1a] border border-gray-700 text-xs rounded px-2 py-1.5 text-gray-300 outline-none focus:border-gray-500">
                             <option>Llamada</option><option>WhatsApp</option><option>Licitación</option><option>Rebalanceo</option>
                           </select>
-                          <input type="text" value={newEventDesc} onChange={e=>setNewEventDesc(e.target.value)} placeholder="Registro de interacción..." className="flex-1 bg-[#1a1a1a] border border-gray-700 text-xs rounded px-3 py-2 text-white outline-none focus:border-gray-500 transition-colors"/>
-                          <button onClick={createEvent} className="bg-gray-800 hover:bg-gray-700 text-white px-3 py-1 rounded text-xs font-bold transition-colors">↳</button>
+                          <div className="flex gap-2">
+                            <input type="text" value={newEventDesc} onChange={e=>setNewEventDesc(e.target.value)} placeholder="Nota..." className="flex-1 bg-[#1a1a1a] border border-gray-700 text-xs rounded px-2 py-1.5 text-white outline-none focus:border-gray-500 transition-colors"/>
+                            <button onClick={createEvent} className="bg-gray-800 hover:bg-gray-700 text-white px-3 py-1.5 rounded text-xs font-bold transition-colors">↳</button>
+                          </div>
                         </div>
+
+                        {/* Línea de tiempo */}
                         <div className="flex-1 overflow-y-auto pr-2 space-y-4">
                           {crmEvents.length === 0 ? (
-                            <p className="text-center text-xs text-gray-600 mt-10">Sin interacciones registradas.</p>
+                            <p className="text-center text-xs text-gray-600 mt-10">Sin interacciones previas.</p>
                           ) : (
                             crmEvents.map((ev, i) => (
                               <div key={ev.id} className="relative pl-4 border-l border-gray-800/80">
@@ -704,6 +735,7 @@ export default function Home() {
                           )}
                         </div>
                       </div>
+
                     </div>
                   </div>
                 )}
